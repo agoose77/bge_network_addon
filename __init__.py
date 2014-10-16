@@ -33,16 +33,21 @@ import bpy
 import json
 from os import path, makedirs
 
-from network.enums import Netmodes
 from game_system.configobj import ConfigObj
+import sys
+sys.modules.pop("game_system")
+sys.modules.pop("game_system.configobj")
+sys.modules.pop("game_system.six")
 
 
-NETWORK_ENUMS = [('SERVER', "Server", "Server", Netmodes.server),
-                 ('CLIENT', "Client", "Client", Netmodes.client)]
+
+NETWORK_ENUMS = [('SERVER', "Server", "Server", 0),
+                 ('CLIENT', "Client", "Client", 1)]
 
 CONFIGURATION_FILE = "configuration.json"
 DATA_PATH = "network_data"
-MAINLOOP_FILENAME = "interface.py"
+MAINLOOP_FILENAME = "mainloop.py"
+REQUIRED_FILES = MAINLOOP_FILENAME, "interface.py"
 DISPATCHER_NAME = "DISPATCHER"
 
 
@@ -95,7 +100,6 @@ class StateGroup(bpy.types.PropertyGroup):
 
     name = bpy.props.StringProperty(name="Name", default="", description="Netmode of state group")
     state_mask = bpy.props.IntProperty()
-    netmode = bpy.props.IntProperty()
 
 
 bpy.utils.register_class(StateGroup)
@@ -506,7 +510,7 @@ def on_save(dummy):
                                           'target': r.target, 'reliable': r.reliable,
                                           'simulated': r.simulated} for r in obj.rpc_calls}
             data['templates'] = [t.name for t in obj.templates]
-            data['states'] = {c.netmode: c.state_mask for c in obj.states}
+            data['states'] = {c.name: c.state_mask for c in obj.states}
 
             makedirs(path.dirname(filepath), exist_ok=True)
             with open(filepath, "w") as file:
@@ -548,12 +552,10 @@ def update_attributes(context):
     if not obj.states:
         server = obj.states.add()
         server.name = "Server"
-        server.netmode = Netmodes.server
         server.state_mask = 2
 
         client = obj.states.add()
         client.name = "Client"
-        client.netmode = Netmodes.client
         client.state_mask = 1
 
 
@@ -580,13 +582,14 @@ def update_network_logic(context):
     if not context.scene.get("__main__") == MAINLOOP_FILENAME:
         context.scene['__main__'] = MAINLOOP_FILENAME
 
-    source_dir = path.dirname(__file__)
-    source_path = path.join(source_dir, MAINLOOP_FILENAME)
+    for filename in REQUIRED_FILES:
+        source_dir = path.dirname(__file__)
+        source_path = path.join(source_dir, filename)
 
-    if not MAINLOOP_FILENAME in bpy.data.texts:
-        text = bpy.data.texts.new(MAINLOOP_FILENAME)
-        with open(source_path, "r") as file:
-            text.from_string(file.read())
+        if not filename in bpy.data.texts:
+            text = bpy.data.texts.new(filename)
+            with open(source_path, "r") as file:
+                text.from_string(file.read())
 
 
 update_handlers.append(update_attributes)
@@ -598,6 +601,7 @@ def register():
     bpy.utils.register_module(__name__)
     bpy.app.handlers.scene_update_post.append(on_update)
     bpy.app.handlers.save_post.append(on_save)
+    bpy.app.handlers.game_pre.append(on_save)
 
     AttributesPanel.register()
     RPCPanel.register()
@@ -608,3 +612,4 @@ def unregister():
     bpy.utils.unregister_module(__name__)
     bpy.app.handlers.scene_update_post.remove(on_update)
     bpy.app.handlers.save_post.remove(on_save)
+    bpy.app.handlers.game_pre.remove(on_save)
