@@ -115,8 +115,8 @@ def determine_rpc_calls(subjects):
     return messages
 
 
-register_locals = """local_dict = dict();local_dict=locals().copy()\n{}\nfunc_name = next(iter(set(locals())
-                            .difference(local_dict)));cls_dict[func_name] = locals()[func_name]"""
+register_locals = """local_dict = dict();local_dict=locals().copy()\n{}\nfunc_name = next(iter(set(locals())"""\
+                  """.difference(local_dict)));cls_dict[func_name] = locals()[func_name]"""
 
 
 def create_unique_message_subjects(obj, identifier):
@@ -129,11 +129,19 @@ def create_unique_message_subjects(obj, identifier):
     actuators = [c for c in obj.actuators if isinstance(c, bge.types.KX_NetworkMessageActuator)]
 
     for message_handler in sensors + actuators:
-        if not (message_handler.subject.startswith(RPC_PREFIX) or message_handler.subject.startswith(NOTIFICATION_PREFIX)):
+        message_subject = message_handler.subject
+
+        if message_subject.startswith(RPC_PREFIX):
+            prefix = RPC_PREFIX
+
+        elif message_subject.startswith(NOTIFICATION_PREFIX):
+            prefix = NOTIFICATION_PREFIX
+
+        else:
             continue
 
-        name = message_handler.subject[len(RPC_PREFIX):]
-        message_handler.subject = RPC_PREFIX + combine_id_and_name(name, identifier)
+        name = message_subject[len(prefix):]
+        message_handler.subject = prefix + combine_id_and_name(name, identifier)
 
 
 def create_rpc(name, data):
@@ -159,6 +167,13 @@ def create_rpc(name, data):
     return """{reliable}{simulated}def {name}(self{args}) -> {returns}:\n\tself._dispatch_rpc('{name}', {all_args})"""\
         .format(reliable=reliable_decorator, simulated=simulated_decorator, name=name, args=args_declaration,
                 returns=return_target, all_args=args_tuple)
+
+
+def create_conditions(attributes):
+    yield_statements = ["yield '{}'".format(attr) for attr in attributes]
+    yield_body = "\n".join(yield_statements)
+    return """def conditions(self, is_owner, is_complaint, is_initial):\n\t"""\
+           """yield from super().conditions(is_owner, is_complaint, is_initial)\n\t{}""".format(yield_body)
 
 
 def create_class(name, configuration):
@@ -196,6 +211,10 @@ def create_class(name, configuration):
         register_string = register_locals.format(rpc_definition)
 
         exec(register_string)
+
+    conditions_definition = create_conditions(attributes)
+    register_string = register_locals.format(conditions_definition)
+    exec(register_string)
     
     return type(name, tuple(bases), cls_dict)
 

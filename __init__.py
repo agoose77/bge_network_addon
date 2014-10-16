@@ -30,16 +30,15 @@ bl_info = {
     "category": "Game Engine"}
 
 import bpy
-import json
+import sys
+from json import dump
 from os import path, makedirs
+from inspect import getmembers, isclass
+
+ORIGINAL_MODULES = list(sys.modules)
 
 from game_system.configobj import ConfigObj
-import sys
-sys.modules.pop("game_system")
-sys.modules.pop("game_system.configobj")
-sys.modules.pop("game_system.six")
-
-
+from network.replicable import Replicable
 
 NETWORK_ENUMS = [('SERVER', "Server", "Server", 0),
                  ('CLIENT', "Client", "Client", 1)]
@@ -105,14 +104,28 @@ class StateGroup(bpy.types.PropertyGroup):
 bpy.utils.register_class(StateGroup)
 
 
-class TemplateGroup(bpy.types.PropertyGroup):
+class TemplateClass(bpy.types.PropertyGroup):
 
-    """PropertyGroup for RPC calls"""
+    """PropertyGroup for Template items"""
 
-    name = bpy.props.StringProperty(name="Template Class", default="", description="Full path of template")
+    name = bpy.props.StringProperty(name="Name", default="", description="Name of template")
+    active = bpy.props.BoolProperty(name="Active", default=False, description="Use this template")
 
 
-bpy.utils.register_class(TemplateGroup)
+bpy.utils.register_class(TemplateClass)
+
+
+class TemplateModule(bpy.types.PropertyGroup):
+
+    """PropertyGroup for Template collections"""
+
+    name = bpy.props.StringProperty(name="Template Path", default="", description="Full path of template")
+    loaded = bpy.props.BoolProperty(name="Loaded", default=False, description="Flag to prevent reloading")
+    templates = bpy.props.CollectionProperty(name="Templates", type=TemplateClass)
+    templates_active = bpy.props.IntProperty()
+
+
+bpy.utils.register_class(TemplateModule)
 
 
 class SystemPanel(bpy.types.Panel):
@@ -170,11 +183,9 @@ class RPCPanel(bpy.types.Panel):
         row.operator("network.add_rpc_call", icon='ZOOMIN', text="")
         row.operator("network.remove_rpc_call", icon='ZOOMOUT', text="")
 
-        active_index = obj.rpc_calls_index
-        if not (obj.rpc_calls and active_index < len(obj.rpc_calls)):
+        active_rpc = get_active_item(obj.rpc_calls, obj.rpc_calls_index)
+        if active_rpc is None:
             return
-
-        active_rpc = obj.rpc_calls[active_index]
 
         rpc_settings = layout.row()
         rpc_data = rpc_settings.column()
@@ -209,11 +220,11 @@ class StatesPanel(bpy.types.Panel):
 
         layout.template_list('RENDER_RT_StateList', "States", obj, "states", obj, "states_index", rows=3)
 
-        active_index = obj.states_index
-        if not (obj.states and active_index < len(obj.states)):
+        active_state = get_active_item(obj.states, obj.states_index)
+        if active_state is None:
             return
 
-        state_mask = obj.states[active_index].state_mask
+        state_mask = active_state.state_mask
         states = [i for i in range(30) if state_mask & (1 << i)]
 
         box = layout.row()
@@ -254,7 +265,7 @@ class TemplatesPanel(bpy.types.Panel):
     @classmethod
     def register(cls):
         bpy.types.Object.templates_index = bpy.props.IntProperty(default=0)
-        bpy.types.Object.templates = bpy.props.CollectionProperty(name="Templates", type=TemplateGroup)
+        bpy.types.Object.templates = bpy.props.CollectionProperty(name="Templates", type=TemplateModule)
 
     def draw(self, context):
         layout = self.layout
@@ -262,26 +273,32 @@ class TemplatesPanel(bpy.types.Panel):
         obj = context.object
 
         rpc_list = layout.row()
-        rpc_list.template_list('UI_UL_list', "Templates", obj, "templates", obj, "templates_index", rows=3)
+        rpc_list.template_list('RENDER_RT_TemplateGroupList', "Templates", obj, "templates", obj, "templates_index", rows=3)
 
         row = rpc_list.column(align=True)
         row.operator("network.add_template", icon='ZOOMIN', text="")
         row.operator("network.remove_template", icon='ZOOMOUT', text="")
 
-        active_index = obj.templates_index
-        if not (obj.templates and active_index < len(obj.templates)):
+        active_template = get_active_item(obj.templates, obj.templates_index)
+        if active_template is None:
             return
 
-        active_template = obj.templates[active_index]
-
         row = layout.row()
-        row.prop(active_template, "name", icon="FILESEL")
+        row.prop(active_template, "name", icon="FILE_SCRIPT")
+
+        column = layout.column()
+        column.label("Template Classes")
+        column.template_list('RENDER_RT_TemplateList', "TemplateItem", active_template, "templates", active_template,
+                          "templates_active", rows=3)
 
 
 class RENDER_RT_StateList(bpy.types.UIList):
 
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
         layout.label(item.name, icon="NONE")
+
+        view = layout.operator("network.set_states_visible", icon='RESTRICT_VIEW_OFF', text="")
+        view.index = index
 
 
 class RENDER_RT_RPCArgumentList(bpy.types.UIList):
@@ -291,8 +308,6 @@ class RENDER_RT_RPCArgumentList(bpy.types.UIList):
         layout.label(item.name, icon="NONE")
 
         layout = layout.split(0.8, True)
-        row = layout.row()
-
         item_active = item.replicate
 
         row = layout.row()
@@ -332,6 +347,20 @@ class RENDER_RT_RPCList(bpy.types.UIList):
 
         simulated_icon = 'SOLO_ON' if item.simulated else 'SOLO_OFF'
         layout.prop(item, "simulated", text="", icon=simulated_icon, emboss=False)
+
+
+class RENDER_RT_TemplateGroupList(bpy.types.UIList):
+
+    def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
+        layout.label(icon='FILE_SCRIPT', text=item.name)
+
+
+class RENDER_RT_TemplateList(bpy.types.UIList):
+
+    def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
+        layout.label(icon='PLUGIN', text=item.name)
+
+        layout.prop(item, "active", text="")
 
 
 class LOGIC_OT_add_rpc(bpy.types.Operator):
@@ -420,10 +449,39 @@ class LOGIC_OT_save_states(bpy.types.Operator):
         return {'FINISHED'}
 
 
+class LOGIC_OT_set_states_visible(bpy.types.Operator):
+    """Tooltip"""
+    bl_idname = "network.set_states_visible"
+    bl_label = "Set the states for this netmode visible"
+
+    index = bpy.props.IntProperty()
+
+    @classmethod
+    def poll(cls, context):
+        return context.active_object is not None
+
+    def execute(self, context):
+        obj = context.active_object
+
+        active_state = obj.states[self.index]
+        active_mask = active_state.state_mask
+
+        obj.game.states_visible = [bool((1 << i) & active_mask) for i in range(len(obj.game.states_visible))]
+
+        return {'FINISHED'}
+
+
 def is_network_enabled(obj):
     has_attributes = any(c.replicate for c in obj.attributes)
     has_rpc_calls = bool(obj.rpc_calls)
     return has_attributes or has_rpc_calls
+
+
+def get_active_item(collection, index):
+    if index >= len(collection):
+        return None
+
+    return collection[index]
 
 
 def update_collection(source, destination):
@@ -443,22 +501,6 @@ def update_collection(source, destination):
     for attr in set(destination).difference(marked_attributes):
         index = next(i for i, x in enumerate(destination) if x == attr)
         destination.remove(index)
-
-
-def bpy_struct_to_dict(value):
-    if type(value) in (int, bool, float, str):
-        return value
-
-    elif hasattr(value, "keys"):
-        data = {}
-        for key, value_ in zip(value.keys(), value.values()):
-            formatted = bpy_struct_to_dict(value_)
-            if formatted is None:
-                continue
-
-            data[key] = formatted
-
-        return data
 
 
 update_handlers = []
@@ -509,12 +551,14 @@ def on_save(dummy):
             data['rpc_calls'] = {r.name: {'arguments': {a.name: a.type for a in r.arguments},
                                           'target': r.target, 'reliable': r.reliable,
                                           'simulated': r.simulated} for r in obj.rpc_calls}
-            data['templates'] = [t.name for t in obj.templates]
+
+            data['templates'] = ["{}.{}".format(g.name, t.name) for g in obj.templates for t in g.templates
+                                 if t.active]
             data['states'] = {c.name: c.state_mask for c in obj.states}
 
             makedirs(path.dirname(filepath), exist_ok=True)
             with open(filepath, "w") as file:
-                json.dump(data, file)
+                dump(data, file)
 
             configuration = ConfigObj()
             configuration['BGE'] = {'object_name': obj.name}
@@ -532,10 +576,13 @@ def on_save(dummy):
     config['netmode'] = scene.network_mode
 
     with open(path.join(data_path, "main.definition"), "w") as file:
-        json.dump(config, file)
+        dump(config, file)
 
 
 def update_attributes(context):
+    if not hasattr(context, "object"):
+        return
+
     if not context.object:
         return
 
@@ -592,9 +639,55 @@ def update_network_logic(context):
                 text.from_string(file.read())
 
 
+@bpy.app.handlers.persistent
+def clean_modules(dummy):
+    """Free any imported modules I.E Network to prevent state error"""
+    for mod_name in set(sys.modules).difference(ORIGINAL_MODULES):
+        sys.modules.pop(mod_name)
+
+
+def update_templates(context):
+    obj = context.object
+    if not obj:
+        return
+
+    template_module = get_active_item(obj.templates, obj.templates_index)
+    if template_module is None:
+        return
+
+    template_path = template_module.name
+
+    if not template_path:
+        return
+
+    if template_module.loaded:
+        return
+
+    try:
+        module = __import__(template_path)
+    except ImportError:
+        return
+
+    templates = template_module.templates
+    templates.clear()
+
+    for name, value in getmembers(module):
+        if not isclass(value):
+            continue
+
+        if not issubclass(value, Replicable) or value is Replicable:
+            continue
+
+        template = templates.add()
+        template.name = name
+
+    template_module.loaded = True
+
+
 update_handlers.append(update_attributes)
 update_handlers.append(update_network_logic)
 update_handlers.append(update_message_listener)
+update_handlers.append(update_templates)
 
 
 def register():
@@ -602,6 +695,7 @@ def register():
     bpy.app.handlers.scene_update_post.append(on_update)
     bpy.app.handlers.save_post.append(on_save)
     bpy.app.handlers.game_pre.append(on_save)
+    bpy.app.handlers.game_pre.append(clean_modules)
 
     AttributesPanel.register()
     RPCPanel.register()
@@ -613,3 +707,4 @@ def unregister():
     bpy.app.handlers.scene_update_post.remove(on_update)
     bpy.app.handlers.save_post.remove(on_save)
     bpy.app.handlers.game_pre.remove(on_save)
+    bpy.app.handlers.game_pre.remove(clean_modules)
