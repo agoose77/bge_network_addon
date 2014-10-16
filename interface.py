@@ -301,14 +301,17 @@ def transition_states(obj, configuration):
     """
     masks = configuration['states']
     netmode = WorldInfo.netmode
-
+    
+    state = obj.state
     for mask_netmode, mask in masks.items():
         if mask_netmode == netmode:
             continue
 
-        obj.state &= ~mask
+        for i in range(30):
+            state &= mask & ~(1 << i)
+            
 
-    obj.state |= masks[netmode]
+    obj.state = state | masks[netmode]
 
 
 class ActorBase(entities.Actor):
