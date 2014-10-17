@@ -139,7 +139,7 @@ class SystemPanel(bpy.types.Panel):
     @classmethod
     def register(cls):
         bpy.types.Scene.network_mode = bpy.props.EnumProperty(name="Mode", items=NETWORK_ENUMS)
-        bpy.types.Scene.host = bpy.props.StringProperty(name="Socket Host")
+        bpy.types.Scene.host = bpy.props.StringProperty(name="Socket Host", default="")
         bpy.types.Scene.port = bpy.props.IntProperty(name="Socket Port")
         bpy.types.Scene.tick_rate = bpy.props.IntProperty(name="Tick Rate", default=30)
         bpy.types.Scene.metric_interval = bpy.props.FloatProperty(name="Metrics Sample Interval", default=2.0)
@@ -151,7 +151,6 @@ class SystemPanel(bpy.types.Panel):
 
         layout.prop(scene, "network_mode", icon='CONSOLE')
 
-        layout.prop(scene, "host")
         if scene.network_mode == "SERVER":
             layout.prop(scene, "port")
 

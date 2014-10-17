@@ -13,16 +13,24 @@ import bge
 bge.types.KX_PythonLogicLoop = type("", (), {})
 from bge_game_system.definitions import BGEComponent
 
+from network.replicable import Replicable
+from network.signals import SignalListener, Signal
+
 from collections import defaultdict
 from json import load
 
 RPC_PREFIX = "RPC_"
 NOTIFICATION_PREFIX = "NOTIFY_"
+TARGETED_SIGNAL_PREFIX = "SIGNAL_"
+GLOBAL_SIGNAL_PREFIX = "GLOBAL_SIGNAL_"
+
+UNIQUE_PREFIXES = RPC_PREFIX, NOTIFICATION_PREFIX, TARGETED_SIGNAL_PREFIX
 
 DATA_PATH = "network_data"
 ResourceManager.data_path = bge.logic.expandPath("//{}".format(DATA_PATH))
 
 BGEComponentLoader = entities.ComponentLoader().__class__
+
 
 # Entity loader
 class Loader:
@@ -48,6 +56,24 @@ SETUP_ACTORS = {}
 classes = {}
 configurations = {}
 sorted_rpc_arguments = {}
+
+
+class SignalForwarder(SignalListener):
+
+    def __init__(self):
+        self.register_signals()
+
+    @Signal.global_listener
+    def handle_signal(self, *args, signal, target, **kwargs):
+        signal_name = signal.__name__
+
+        if target is not None and isinstance(target, Replicable):
+            subject = TARGETED_SIGNAL_PREFIX + combine_id_and_name(signal_name, target.instance_id)
+
+        else:
+            subject = GLOBAL_SIGNAL_PREFIX + signal_name
+
+        bge.logic.sendMessage(subject, "")
 
 
 @with_tag("addon")
@@ -90,19 +116,28 @@ class BGESetupComponent(BGEComponent):
 
 
 def combine_id_and_name(name, id_):
+    """Combine identifier and name into single value
+
+    :param name: name
+    :param id_: unique id
+    """
     return "{}#_#{}".format(name, id_)
 
 
 def split_id_and_name(combined):
+    """Split combined identifier and name into separate values
+
+    :param combined: combined string
+    """
     name_str, id_str = combined.split("#_#")
     return name_str, eval(id_str)
 
 
-def get_configuration(obj):
-    pass
-
-
 def determine_rpc_calls(subjects):
+    """Extract message subjects which belong to RPC calls
+
+    :param subjects: message subjects
+    """
     messages = defaultdict(list)
     for subject in subjects:
         if not subject.startswith(RPC_PREFIX):
@@ -131,11 +166,9 @@ def create_unique_message_subjects(obj, identifier):
     for message_handler in sensors + actuators:
         message_subject = message_handler.subject
 
-        if message_subject.startswith(RPC_PREFIX):
-            prefix = RPC_PREFIX
-
-        elif message_subject.startswith(NOTIFICATION_PREFIX):
-            prefix = NOTIFICATION_PREFIX
+        for prefix in UNIQUE_PREFIXES:
+            if message_subject.startswith(prefix):
+                break
 
         else:
             continue
@@ -170,6 +203,10 @@ def create_rpc(name, data):
 
 
 def create_conditions(attributes):
+    """Construct conditions generator from attribute names
+
+    :param attributes: sequence of names of attributes
+    """
     yield_statements = ["yield '{}'".format(attr) for attr in attributes]
     yield_body = "\n".join(yield_statements)
     return """def conditions(self, is_owner, is_complaint, is_initial):\n\t"""\
@@ -328,7 +365,6 @@ def transition_states(obj, configuration):
 
         for i in range(30):
             state &= mask & ~(1 << i)
-            
 
     obj.state = state | masks[netmode]
 
@@ -352,23 +388,28 @@ class ActorBase(entities.Actor):
             handler(name, data)
 
 
-def convert_data():
-    for scene in bge.logic.getSceneList():
-        for obj in list(scene.objects) + list(scene.objectsInactive):
-            name = obj.name
+def load_object_definitions(scene):
+    """Load definition files for all objects, in all scenes
 
-            if name in classes:
-                continue
+    :param scene: scene to load for
+    """
+    for obj in list(scene.objects) + list(scene.objectsInactive):
+        name = obj.name
 
-            try:
-                configuration = load_configuration(name)
+        if name in classes:
+            continue
 
-            except FileNotFoundError:
-                continue
+        try:
+            configuration = load_configuration(name)
 
-            configurations[name] = configuration
-            sorted_rpc_arguments[name] = {rpc_name: sorted(data['arguments']) for rpc_name, data in
-                                          configuration['rpc_calls'].items()}
+        except FileNotFoundError:
+            continue
 
-            classes[name] = create_class(name, configuration)
+        configurations[name] = configuration
+        sorted_rpc_arguments[name] = {rpc_name: sorted(data['arguments']) for rpc_name, data in
+                                      configuration['rpc_calls'].items()}
 
+        classes[name] = create_class(name, configuration)
+
+
+signal_forwarder = SignalForwarder()

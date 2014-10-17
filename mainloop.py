@@ -7,7 +7,7 @@ from network.world_info import WorldInfo
 from game_system.signals import LogicUpdateSignal, TimerUpdateSignal, PlayerInputSignal
 from game_system.timer import Timer
 
-from interface import convert_data, resolve_netmode, initialise_network_obj, DATA_PATH, SETUP_OBJECTS
+from interface import load_object_definitions, resolve_netmode, initialise_network_obj, DATA_PATH, SETUP_OBJECTS
 from json import load
 from time import clock
 
@@ -44,7 +44,8 @@ def main():
 
     requires_exit = SignalValue(False)
 
-    convert_data()
+    for scene in bge.logic.getSceneList():
+        load_object_definitions(scene)
 
     # Fixed time-step
     while not requires_exit.value:
