@@ -32,7 +32,8 @@ bl_info = {
 import bpy
 import sys
 from json import dump
-from os import path, makedirs
+from os import path, makedirs, listdir
+from shutil import rmtree
 from inspect import getmembers, isclass
 
 ORIGINAL_MODULES = list(sys.modules)
@@ -44,10 +45,13 @@ NETWORK_ENUMS = [('SERVER', "Server", "Server", 0),
                  ('CLIENT', "Client", "Client", 1)]
 
 CONFIGURATION_FILE = "configuration.json"
+LISTENER_PATH = "interface.listener"
 DATA_PATH = "network_data"
 MAINLOOP_FILENAME = "mainloop.py"
-REQUIRED_FILES = MAINLOOP_FILENAME, "interface.py"
+INTERFACE_FILENAME = "interface.py"
+REQUIRED_FILES = MAINLOOP_FILENAME, INTERFACE_FILENAME
 DISPATCHER_NAME = "DISPATCHER"
+ENTITY_BASES = "game_system.entities",
 
 
 class AttributeGroup(bpy.types.PropertyGroup):
@@ -57,7 +61,7 @@ class AttributeGroup(bpy.types.PropertyGroup):
     name = bpy.props.StringProperty()
     type = bpy.props.StringProperty()
 
-    notify_group = bpy.props.StringProperty(description="Name of notification group")
+    notify = bpy.props.BoolProperty(default=False, description="Whether attribute should trigger notifications")
     replicate = bpy.props.BoolProperty(default=False, description="Replicate this attribute")
 
 
@@ -143,11 +147,17 @@ class SystemPanel(bpy.types.Panel):
         bpy.types.Scene.port = bpy.props.IntProperty(name="Socket Port")
         bpy.types.Scene.tick_rate = bpy.props.IntProperty(name="Tick Rate", default=30)
         bpy.types.Scene.metric_interval = bpy.props.FloatProperty(name="Metrics Sample Interval", default=2.0)
+        bpy.types.Scene.use_network = bpy.props.BoolProperty(name="Use Networking", default=False,
+                                                             description="Enable networking for the game")
+
+    def draw_header(self, context):
+        self.layout.prop(context.scene, "use_network", text="")
 
     def draw(self, context):
         layout = self.layout
-
         scene = context.scene
+
+        layout.active = scene.use_network
 
         layout.prop(scene, "network_mode", icon='CONSOLE')
 
@@ -164,6 +174,10 @@ class RPCPanel(bpy.types.Panel):
     bl_label = "RPC Calls"
 
     COMPAT_ENGINES = {'BLENDER_GAME'}
+
+    @classmethod
+    def poll(cls, context):
+        return context.object is not None
 
     @classmethod
     def register(cls):
@@ -191,8 +205,9 @@ class RPCPanel(bpy.types.Panel):
         rpc_data.label("Info", icon='INFO')
         rpc_data.prop(active_rpc, 'name')
         rpc_data.prop(active_rpc, 'target')
-        rpc_data.prop(active_rpc, 'reliable')
-        rpc_data.prop(active_rpc, 'simulated')
+        rpc_data.prop(active_rpc, 'reliable', icon='LIBRARY_DATA_DIRECT' if active_rpc.reliable else
+                      'LIBRARY_DATA_INDIRECT')
+        rpc_data.prop(active_rpc, 'simulated', icon='SOLO_ON' if active_rpc.simulated else 'SOLO_OFF')
 
         rpc_args = rpc_settings.column()
         rpc_args.label("Arguments", icon='SETTINGS')
@@ -206,6 +221,10 @@ class StatesPanel(bpy.types.Panel):
     bl_label = "Network State"
 
     COMPAT_ENGINES = {'BLENDER_GAME'}
+
+    @classmethod
+    def poll(cls, context):
+        return context.object is not None
 
     @classmethod
     def register(cls):
@@ -224,7 +243,7 @@ class StatesPanel(bpy.types.Panel):
             return
 
         state_mask = active_state.state_mask
-        states = [i for i in range(30) if state_mask & (1 << i)]
+        states = [i + 1 for i in range(30) if state_mask & (1 << i)]
 
         box = layout.row()
         box.label(", ".join([str(x) for x in states]) if states else "None", icon='PINNED')
@@ -237,6 +256,10 @@ class AttributesPanel(bpy.types.Panel):
     bl_label = "Replicated Attributes"
 
     COMPAT_ENGINES = {'BLENDER_GAME'}
+
+    @classmethod
+    def poll(cls, context):
+        return context.object is not None
 
     @classmethod
     def register(cls):
@@ -262,6 +285,10 @@ class TemplatesPanel(bpy.types.Panel):
     COMPAT_ENGINES = {'BLENDER_GAME'}
 
     @classmethod
+    def poll(cls, context):
+        return context.object is not None
+
+    @classmethod
     def register(cls):
         bpy.types.Object.templates_index = bpy.props.IntProperty(default=0)
         bpy.types.Object.templates = bpy.props.CollectionProperty(name="Templates", type=TemplateModule)
@@ -282,13 +309,33 @@ class TemplatesPanel(bpy.types.Panel):
         if active_template is None:
             return
 
-        row = layout.row()
-        row.prop(active_template, "name", icon="FILE_SCRIPT")
-
         column = layout.column()
         column.label("Template Classes")
         column.template_list('RENDER_RT_TemplateList', "TemplateItem", active_template, "templates", active_template,
                           "templates_active", rows=3)
+
+
+class NetworkPanel(bpy.types.Panel):
+    bl_space_type = "LOGIC_EDITOR"
+    bl_region_type = "UI"
+    bl_label = "Network"
+
+    COMPAT_ENGINES = {'BLENDER_GAME'}
+
+    @classmethod
+    def poll(cls, context):
+        return context.object is not None
+
+    @classmethod
+    def register(cls):
+        bpy.types.Object.use_network = bpy.props.BoolProperty(default=False, name="Use Networking",
+                                                              description="Enable replication for this object")
+
+    def draw(self, context):
+        layout = self.layout
+        obj = context.object
+
+        layout.prop(obj, "use_network", icon='AUTOMERGE_ON' if obj.use_network else 'AUTOMERGE_OFF')
 
 
 class RENDER_RT_StateList(bpy.types.UIList):
@@ -317,15 +364,12 @@ class RENDER_RT_RPCArgumentList(bpy.types.UIList):
 class RENDER_RT_AttributeList(bpy.types.UIList):
 
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
-        layout = layout.split(0.3, True)
         layout.label(item.name, icon="NONE")
-
-        layout = layout.split(0.8, True)
         row = layout.row()
 
         item_active = item.replicate
 
-        row.prop(item, "notify_group", text="", icon='INFO')
+        row.prop(item, "notify", text="", icon='INFO')
         row.active = item_active
 
         row = layout.row()
@@ -357,7 +401,7 @@ class RENDER_RT_TemplateGroupList(bpy.types.UIList):
 class RENDER_RT_TemplateList(bpy.types.UIList):
 
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
-        layout.label(icon='PLUGIN', text=item.name)
+        layout.label(icon='SCRIPTPLUGINS', text=item.name)
 
         layout.prop(item, "active", text="")
 
@@ -399,13 +443,27 @@ class LOGIC_OT_add_template(bpy.types.Operator):
     bl_idname = "network.add_template"
     bl_label = "Add template"
 
+    path = bpy.props.StringProperty(name="Path", description="Path to templates")
+
     @classmethod
     def poll(cls, context):
         return context.active_object is not None
 
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self)
+
     def execute(self, context):
         obj = context.active_object
-        obj.templates.add()
+        name = self.path
+
+        try:
+            __import__(name, fromlist=[''])
+
+        except (ValueError, ImportError):
+            return {'CANCELLED'}
+
+        template = obj.templates.add()
+        template.name = name
 
         return {'FINISHED'}
 
@@ -421,7 +479,9 @@ class LOGIC_OT_remove_template(bpy.types.Operator):
 
     def execute(self, context):
         obj = context.active_object
-        obj.templates.remove(obj.templates_index)
+        active_template = get_active_item(obj.templates, obj.templates_index)
+        if not active_template.name in ENTITY_BASES:
+            obj.templates.remove(obj.templates_index)
 
         return {'FINISHED'}
 
@@ -468,12 +528,6 @@ class LOGIC_OT_set_states_visible(bpy.types.Operator):
         obj.game.states_visible = [bool((1 << i) & active_mask) for i in range(len(obj.game.states_visible))]
 
         return {'FINISHED'}
-
-
-def is_network_enabled(obj):
-    has_attributes = any(c.replicate for c in obj.attributes)
-    has_rpc_calls = bool(obj.rpc_calls)
-    return has_attributes or has_rpc_calls
 
 
 def get_active_item(collection, index):
@@ -533,20 +587,30 @@ def on_save(dummy):
     host = scene.host
     port = scene.port
 
-    config = {"scenes": {}}
-    scenes = config["scenes"]
+    config = {}
+
+    files = listdir(data_path)
 
     for scene_ in bpy.data.scenes:
-        network_objects = scenes[scene_.name] = []
 
         for obj in scene_.objects:
-            if not is_network_enabled(obj):
+            obj_name = obj.name
+
+            obj_path = path.join(data_path, obj_name)
+
+            if not obj.use_network:
+                if obj_name in files:
+                    rmtree(obj_path)
+
                 continue
 
-            filepath = path.join(data_path, "{}/actor.definition".format(obj.name))
+            filepath = path.join(obj_path, "actor.definition")
 
             data = dict()
-            data['attributes'] = {a.name: {'type': a.type, 'notify': a.notify_group} for a in obj.attributes if a.replicate}
+
+            get_value = lambda n: obj.game.properties[n].value
+            data['attributes'] = {a.name: {'default': get_value(a.name), 'notify': a.notify}
+                                  for a in obj.attributes if a.replicate}
             data['rpc_calls'] = {r.name: {'arguments': {a.name: a.type for a in r.arguments},
                                           'target': r.target, 'reliable': r.reliable,
                                           'simulated': r.simulated} for r in obj.rpc_calls}
@@ -565,8 +629,6 @@ def on_save(dummy):
             configpath = path.join(data_path, "{}/definition.cfg".format(obj.name))
             with open(configpath, "wb") as file:
                 configuration.write(file)
-
-            network_objects.append(obj.name)
 
     config['host'] = host
     config['port'] = port
@@ -619,14 +681,21 @@ def update_message_listener(context):
 
     empty.game.sensors[0].link(empty.game.controllers[0])
     empty.game.controllers[0].mode = 'MODULE'
-    empty.game.controllers[0].module = 'interface.listener'
+    empty.game.controllers[0].module = LISTENER_PATH
+    empty.game.controllers[0].states = 30
 
     empty.name = DISPATCHER_NAME
 
 
 def update_network_logic(context):
-    if not context.scene.get("__main__") == MAINLOOP_FILENAME:
-        context.scene['__main__'] = MAINLOOP_FILENAME
+    scene = context.scene
+
+    if scene.use_network:
+        if not scene.get("__main__") == INTERFACE_FILENAME:
+            scene['__main__'] = INTERFACE_FILENAME
+
+    elif '__main__' in scene:
+        del scene['__main__']
 
     for filename in REQUIRED_FILES:
         source_dir = path.dirname(__file__)
@@ -650,6 +719,13 @@ def update_templates(context):
     if not obj:
         return
 
+    for module_path in ENTITY_BASES:
+        if module_path in obj.templates:
+            continue
+
+        template = obj.templates.add()
+        template.name = module_path
+
     template_module = get_active_item(obj.templates, obj.templates_index)
     if template_module is None:
         return
@@ -663,7 +739,8 @@ def update_templates(context):
         return
 
     try:
-        module = __import__(template_path)
+        module = __import__(template_path, fromlist=[''])
+
     except ImportError:
         return
 
@@ -671,6 +748,9 @@ def update_templates(context):
     templates.clear()
 
     for name, value in getmembers(module):
+        if name.startswith("_"):
+            continue
+
         if not isclass(value):
             continue
 
@@ -696,9 +776,11 @@ def register():
     bpy.app.handlers.game_pre.append(on_save)
     bpy.app.handlers.game_pre.append(clean_modules)
 
-    AttributesPanel.register()
-    RPCPanel.register()
-    TemplatesPanel.register()
+    # AttributesPanel.register()
+    # RPCPanel.register()
+    # TemplatesPanel.register()
+    # StatesPanel.register()
+    #
 
 
 def unregister():
