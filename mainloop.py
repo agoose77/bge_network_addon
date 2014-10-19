@@ -64,6 +64,9 @@ class SCA_Actor(_Actor):
         for handler in self.rpc_handlers:
             handler(name, data)
 
+    def update(self, delta_time):
+        pass
+
 
 class BpyResolver:
 
@@ -197,7 +200,7 @@ if WITH_BGE:
 
         if not message_sens.positive:
             return
-        print(message_sens.subjects)
+
         messages = determine_rpc_calls(message_sens.subjects)
         for network_id, rpc_names in messages.items():
 
@@ -367,7 +370,8 @@ if WITH_BGE:
             switch = "if self.roles.local == Roles.authority:\n\t\t" + "\n\t\t".join(setter_lines)
             switch += "\n\telse:\n\t\t" + "\n\t\t".join(getter_lines)
 
-            return """@simulated\n@LogicUpdateSignal.global_listener\ndef update(self, delta_time):\n\t{}"""\
+            return """@simulated\n@LogicUpdateSignal.global_listener\ndef update(self, delta_time):"""\
+                   """\n\t{}\n\tsuper().update(delta_time)"""\
                 .format(switch)
 
         @classmethod
@@ -439,7 +443,7 @@ if WITH_BGE:
             class_declaration = "class {}({}):\n\t".format(name, bases_string) + class_body
 
             exec(class_declaration, globals(), base_namespaces)
-            print(class_declaration)
+
             return base_namespaces[name]
 
     def main():
