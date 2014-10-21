@@ -7,6 +7,7 @@ from network.signals import SignalValue, DisconnectSignal, Signal, SignalListene
 from network.type_flag import TypeFlag
 from network.world_info import WorldInfo
 
+from game_system.physics import PhysicsSystem
 from game_system.resources import ResourceManager
 from game_system.entities import Actor as _Actor
 from game_system.signals import LogicUpdateSignal, TimerUpdateSignal, PlayerInputSignal
@@ -51,6 +52,8 @@ class SCA_Actor(_Actor):
     component_tags = tuple(_Actor.component_tags) + ("addon",)
 
     def on_notify(self, name):
+        super().on_notify(name)
+
         for handler in self.notify_handlers:
             handler(name)
 
@@ -465,6 +468,8 @@ if WITH_BGE:
         WorldInfo.tick_rate = logic.getLogicTicRate()
 
         network = Network(host, port)
+        physics = PhysicsSystem()
+
         signal_forwarder = SignalForwarder(signal_to_message)
 
         # Main loop
@@ -502,7 +507,7 @@ if WITH_BGE:
                         requires_exit.value = True
 
                     else:
-                        quit_func = lambda: setattr(requires_exit, "value", True)
+                        quit_func = requires_exit.create_setter(True)
                         DisconnectSignal.invoke(quit_func)
                         # Else abort
                         timeout = Timer(0.6)
@@ -522,6 +527,8 @@ if WITH_BGE:
                 network.receive()
                 update_graphs()
 
+                bge.logic.NextFrame()
+
                 # Update Timers
                 TimerUpdateSignal.invoke(step_time)
 
@@ -534,7 +541,7 @@ if WITH_BGE:
                 LogicUpdateSignal.invoke(step_time)
                 update_graphs()
 
-                bge.logic.NextFrame()
+                physics.update(step_time)
 
                 # Transmit new state to remote peer
                 is_full_update = ((current_time - last_sent_time) >= (1 / network_tick_rate))

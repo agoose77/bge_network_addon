@@ -651,7 +651,7 @@ def update_attributes(context):
     attributes = obj.attributes
 
     update_collection(obj.game.properties, attributes)
-    get_replicated = lambda p: attributes[p.name].replicate
+    get_replicated = lambda p: attributes[p.name].replicate if p.name in attributes else False
 
     for rpc_call in obj.rpc_calls:
         valid_props = [p for p in obj.game.properties if not get_replicated(p)]
