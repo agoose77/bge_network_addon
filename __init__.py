@@ -177,7 +177,7 @@ class RPCPanel(bpy.types.Panel):
 
     @classmethod
     def poll(cls, context):
-        return context.object is not None
+        return context.object is not None and context.object.use_network
 
     @classmethod
     def register(cls):
@@ -224,7 +224,7 @@ class StatesPanel(bpy.types.Panel):
 
     @classmethod
     def poll(cls, context):
-        return context.object is not None
+        return context.object is not None and context.object.use_network
 
     @classmethod
     def register(cls):
@@ -259,7 +259,7 @@ class AttributesPanel(bpy.types.Panel):
 
     @classmethod
     def poll(cls, context):
-        return context.object is not None
+        return context.object is not None and context.object.use_network
 
     @classmethod
     def register(cls):
@@ -286,7 +286,7 @@ class TemplatesPanel(bpy.types.Panel):
 
     @classmethod
     def poll(cls, context):
-        return context.object is not None
+        return context.object is not None and context.object.use_network
 
     @classmethod
     def register(cls):
