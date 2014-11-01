@@ -53,7 +53,7 @@ class SCA_Actor(_Actor):
 
     def on_notify(self, name):
         super().on_notify(name)
-
+        
         for handler in self.notify_handlers:
             handler(name)
 
@@ -122,7 +122,7 @@ def determine_rpc_calls(subjects):
         combined = subject[len(RPC_PREFIX):]
         name, id_ = loads(combined)
         messages[id_].append(name)
-
+ 
     return messages
 
 
@@ -214,12 +214,11 @@ if WITH_BGE:
                 continue
 
             obj = SETUP_REPLICABLES[replicable]
-            config = configurations[obj.name]
-
-            rpc_info = config['rpc_calls']
+            obj_name = obj.name
+            sorted_rpc_args = sorted_rpc_arguments[obj_name]
 
             for rpc_name in rpc_names:
-                rpc_args = rpc_info[rpc_name]['arguments']
+                rpc_args = sorted_rpc_args[rpc_name]
                 rpc_data = [obj[arg_name] for arg_name in rpc_args]
 
                 getattr(replicable, rpc_name)(*rpc_data)
@@ -498,7 +497,8 @@ if WITH_BGE:
 
             # Whilst we have enough time in the buffer
             while accumulator >= step_time:
-
+                current_time += step_time
+                accumulator -= step_time
                 exit_key = logic.getExitKey()
 
                 if logic.keyboard.events[exit_key] == logic.KX_INPUT_JUST_ACTIVATED:
@@ -554,6 +554,3 @@ if WITH_BGE:
                 network_metrics = network.metrics
                 if network_metrics.sample_age >= metric_interval:
                     network_metrics.reset_sample_window()
-
-                current_time += step_time
-                accumulator -= step_time
