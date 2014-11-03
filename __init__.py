@@ -40,9 +40,16 @@ ORIGINAL_MODULES = list(sys.modules)
 
 from game_system.configobj import ConfigObj
 from network.replicable import Replicable
+from network.enums import Roles, Netmodes
 
-NETWORK_ENUMS = [('SERVER', "Server", "Server", 0),
-                 ('CLIENT', "Client", "Client", 1)]
+
+def get_bpy_enum(enum):
+    enum_name = enum.__name__.rstrip("s").lower()
+    return [(x.upper(), x.replace('_', ' ').title(), "{} {}".format(x.capitalize(), enum_name), i)
+            for i, x in enumerate(enum.values)]
+
+NETWORK_ENUMS = get_bpy_enum(Netmodes)
+ROLES_ENUMS = get_bpy_enum(Roles)
 
 CONFIGURATION_FILE = "configuration.json"
 LISTENER_PATH = "interface.listener"
@@ -102,7 +109,7 @@ class StateGroup(bpy.types.PropertyGroup):
     """PropertyGroup for RPC calls"""
 
     name = bpy.props.StringProperty(name="Name", default="", description="Netmode of state group")
-    state_mask = bpy.props.IntProperty()
+    states = bpy.props.BoolVectorProperty(name="States", size=30)
 
 
 bpy.utils.register_class(StateGroup)
@@ -231,6 +238,22 @@ class StatesPanel(bpy.types.Panel):
         bpy.types.Object.states_index = bpy.props.IntProperty(default=0)
         bpy.types.Object.states = bpy.props.CollectionProperty(name="Network States", type=StateGroup)
 
+    def draw_states_row(self, active_state, sub_layout):
+        top_i = 0
+        bottom_i = 15
+
+        for col_i in range(3):
+            column = sub_layout.column(align=True)
+            row = column.row(align=True)
+            for _ in range(5):
+                row.prop(active_state, "states", index=top_i, toggle=True, text="")
+                top_i += 1
+
+            row = column.row(align=True)
+            for _ in range(5):
+                row.prop(active_state, "states", index=bottom_i, toggle=True, text="")
+                bottom_i += 1
+
     def draw(self, context):
         layout = self.layout
 
@@ -242,14 +265,18 @@ class StatesPanel(bpy.types.Panel):
         if active_state is None:
             return
 
-        state_mask = active_state.state_mask
-        states = [i + 1 for i in range(30) if state_mask & (1 << i)]
+        sub_layout = layout.split(0.3)
+        sub_layout.label("States")
 
-        box = layout.row()
-        box.label(", ".join([str(x) for x in states]) if states else "None", icon='PINNED')
-        box.operator("network.save_states", icon='FILE_REFRESH', text="")
+        box = sub_layout.box()
+        sub_layout = box.column_flow(columns=3)
+        self.draw_states_row(active_state, sub_layout)
+
+        column = box.column()
+        column.operator("network.save_states", icon='FILE_REFRESH', text="")
 
 
+# Add support for modifying inherited parameters?
 class AttributesPanel(bpy.types.Panel):
     bl_space_type = "LOGIC_EDITOR"
     bl_region_type = "UI"
@@ -299,7 +326,8 @@ class TemplatesPanel(bpy.types.Panel):
         obj = context.object
 
         rpc_list = layout.row()
-        rpc_list.template_list('RENDER_RT_TemplateGroupList', "Templates", obj, "templates", obj, "templates_index", rows=3)
+        rpc_list.template_list('RENDER_RT_TemplateGroupList', "Templates", obj, "templates", obj, "templates_index",
+                               rows=3)
 
         row = rpc_list.column(align=True)
         row.operator("network.add_template", icon='ZOOMIN', text="")
@@ -312,7 +340,15 @@ class TemplatesPanel(bpy.types.Panel):
         column = layout.column()
         column.label("Template Classes")
         column.template_list('RENDER_RT_TemplateList', "TemplateItem", active_template, "templates", active_template,
-                          "templates_active", rows=3)
+                             "templates_active", rows=3)
+
+        row = layout.row()
+        row.label("Template Attributes")
+
+        box = layout.box()
+        box.prop(obj, "network_role")
+        box.active = obj.use_network
+
 
 
 class NetworkPanel(bpy.types.Panel):
@@ -330,6 +366,9 @@ class NetworkPanel(bpy.types.Panel):
     def register(cls):
         bpy.types.Object.use_network = bpy.props.BoolProperty(default=False, name="Use Networking",
                                                               description="Enable replication for this object")
+        bpy.types.Object.network_role = bpy.props.EnumProperty(name="Network Role",
+                                                               description="Establish a network role for this object",
+                                                               items=ROLES_ENUMS)
 
     def draw(self, context):
         layout = self.layout
@@ -341,19 +380,19 @@ class NetworkPanel(bpy.types.Panel):
 class RENDER_RT_StateList(bpy.types.UIList):
 
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
-        layout.label(item.name, icon="NONE")
+        sub_layout = layout.split(0.8)
+        sub_layout.label(item.name, icon="NONE")
 
-        view = layout.operator("network.set_states_visible", icon='RESTRICT_VIEW_OFF', text="")
+        view = sub_layout.operator("network.set_states_visible", icon='RESTRICT_VIEW_OFF', text="Go To State")
         view.index = index
 
 
 class RENDER_RT_RPCArgumentList(bpy.types.UIList):
 
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
-        layout = layout.split(0.3, True)
-        layout.label(item.name, icon="NONE")
+        sub_layout = layout.split(0.8, True)
+        sub_layout.label(item.name, icon="NONE")
 
-        layout = layout.split(0.8, True)
         item_active = item.replicate
 
         row = layout.row()
@@ -497,13 +536,7 @@ class LOGIC_OT_save_states(bpy.types.Operator):
 
     def execute(self, context):
         obj = context.active_object
-
-        mask = 0
-
-        for index, state in enumerate(obj.game.states_visible):
-            mask |= state << index
-
-        obj.states[obj.states_index].state_mask = mask
+        obj.states[obj.states_index].states = obj.game.states_visible
 
         return {'FINISHED'}
 
@@ -523,9 +556,13 @@ class LOGIC_OT_set_states_visible(bpy.types.Operator):
         obj = context.active_object
 
         active_state = obj.states[self.index]
-        active_mask = active_state.state_mask
+        obj.game.states_visible = active_state.states
 
-        obj.game.states_visible = [bool((1 << i) & active_mask) for i in range(len(obj.game.states_visible))]
+        for area in bpy.context.screen.areas:
+            if area.type != 'LOGIC_EDITOR':
+                continue
+
+            area.tag_redraw()
 
         return {'FINISHED'}
 
@@ -538,22 +575,34 @@ def get_active_item(collection, index):
 
 
 def update_collection(source, destination):
-    marked_attributes = []
+    original = {}
+
+    for prop in destination:
+        original[prop.name] = prop.items()
+
+    destination.clear()
 
     for prop in source:
+        attr = destination.add()
+
         try:
-            attr = destination[prop.name]
+            item_dict = dict(prop.items())
+
+        except TypeError:
+            invalid_members = list(dir(bpy.types.Struct)) + ['rna_type']
+            item_dict = {k: getattr(prop, k) for k in dir(prop) if not k in invalid_members}
+
+        try:
+            original_items = original[prop.name]
 
         except KeyError:
-            attr = destination.add()
-            attr.name = prop.name
+            pass
 
-        attr.type = prop.type
-        marked_attributes.append(attr)
+        else:
+            item_dict.update(original_items)
 
-    for attr in set(destination).difference(marked_attributes):
-        index = next(i for i, x in enumerate(destination) if x == attr)
-        destination.remove(index)
+        for key, value in item_dict.items():
+            attr[key] = value
 
 
 update_handlers = []
@@ -611,7 +660,7 @@ def on_save(dummy):
             get_value = lambda n: obj.game.properties[n].value
             data['attributes'] = {a.name: {'default': get_value(a.name), 'notify': a.notify}
                                   for a in obj.attributes if a.replicate}
-            data['rpc_calls'] = {r.name: {'arguments': {a.name: a.type for a in r.arguments},
+            data['rpc_calls'] = {r.name: {'arguments': {a.name: a.type for a in r.arguments if a.replicate},
                                           'target': r.target, 'reliable': r.reliable,
                                           'simulated': r.simulated} for r in obj.rpc_calls}
 
@@ -640,6 +689,15 @@ def on_save(dummy):
         dump(config, file)
 
 
+def prop_is_replicated(prop, attributes):
+    prop_name = prop.name
+
+    if not prop_name in attributes:
+        return False
+
+    return attributes[prop_name].replicate
+
+
 def update_attributes(context):
     if not hasattr(context, "object"):
         return
@@ -651,10 +709,9 @@ def update_attributes(context):
     attributes = obj.attributes
 
     update_collection(obj.game.properties, attributes)
-    get_replicated = lambda p: attributes[p.name].replicate if p.name in attributes else False
 
     for rpc_call in obj.rpc_calls:
-        valid_props = [p for p in obj.game.properties if not get_replicated(p)]
+        valid_props = [p for p in obj.game.properties if not prop_is_replicated(p, attributes)]
         update_collection(valid_props, rpc_call.arguments)
 
     if not obj.states:
@@ -775,12 +832,6 @@ def register():
     bpy.app.handlers.save_post.append(on_save)
     bpy.app.handlers.game_pre.append(on_save)
     bpy.app.handlers.game_pre.append(clean_modules)
-
-    # AttributesPanel.register()
-    # RPCPanel.register()
-    # TemplatesPanel.register()
-    # StatesPanel.register()
-    #
 
 
 def unregister():
