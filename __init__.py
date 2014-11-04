@@ -48,6 +48,12 @@ def get_bpy_enum(enum):
     return [(x.upper(), x.replace('_', ' ').title(), "{} {}".format(x.capitalize(), enum_name), i)
             for i, x in enumerate(enum.values)]
 
+
+def type_to_enum_type(type_):
+    types = {int: "INT", float: "FLOAT", str: "STRING", bool: "BOOL"}
+    return types[type_]
+
+TYPE_ENUMS = [(c, c, c) for i, c in enumerate(map(type_to_enum_type, (bool, int, float, str)))]
 NETWORK_ENUMS = get_bpy_enum(Netmodes)
 ROLES_ENUMS = get_bpy_enum(Roles)
 
@@ -58,7 +64,65 @@ MAINLOOP_FILENAME = "mainloop.py"
 INTERFACE_FILENAME = "interface.py"
 REQUIRED_FILES = MAINLOOP_FILENAME, INTERFACE_FILENAME
 DISPATCHER_NAME = "DISPATCHER"
-ENTITY_BASES = "game_system.entities",
+DEFAULT_TEMPLATE_MODULES = {"game_system.entities": [], "mainloop": ("SCA_Actor",)}
+DEFAULT_BASES = "SCA_Actor",
+HIDDEN_BASES = "Actor",
+
+
+def state_changed(self, context):
+    bpy.ops.network.set_states_visible(index=context.object.states_index)
+
+
+def template_updated(self, context):
+    obj = context.object
+    if not obj:
+        return
+
+    bases = {}
+    for template_module in obj.templates:
+        template_path = template_module.name
+
+        if not template_module.loaded:
+            continue
+
+        try:
+            module = __import__(template_path, fromlist=[''])
+
+        except ImportError:
+            return
+
+        templates = template_module.templates
+
+        for template in templates:
+            if template.active:
+                cls = getattr(module, template.name)
+                bases[cls] = template
+
+    obj_defaults = obj.template_defaults
+    obj_defaults.clear()
+
+    try:
+        mro = determine_mro(*bases.keys())
+
+    except TypeError:
+        return
+
+    for cls in mro:
+
+        try:
+            template = bases[cls]
+        except KeyError:
+            continue
+
+        for source in template.defaults:
+            attribute_name = source.name
+
+            if attribute_name in obj_defaults:
+                continue
+
+            destination = obj_defaults.add()
+            update_item(source, destination)
+            destination.original_hash = source.hash
 
 
 class AttributeGroup(bpy.types.PropertyGroup):
@@ -115,13 +179,74 @@ class StateGroup(bpy.types.PropertyGroup):
 bpy.utils.register_class(StateGroup)
 
 
+class TemplateAttributeDefault(bpy.types.PropertyGroup):
+
+    @property
+    def hash(self):
+        return str(hash(getattr(self, self.value_name)))
+
+    @property
+    def value_name(self):
+        return "value_{}".format(self.type.lower())
+
+    def get_items(self, context):
+        return []
+
+    name = bpy.props.StringProperty(name="Name")
+    type = bpy.props.EnumProperty(name="Type", items=TYPE_ENUMS)
+
+    value_int = bpy.props.IntProperty()
+    value_float = bpy.props.FloatProperty()
+    value_string = bpy.props.StringProperty()
+    value_bool = bpy.props.BoolProperty()
+    value_enum = bpy.props.EnumProperty(items=get_items)
+
+
+bpy.utils.register_class(TemplateAttributeDefault)
+
+
+class ResolvedTemplateAttributeDefault(bpy.types.PropertyGroup):
+
+    @property
+    def hash(self):
+        return str(hash(getattr(self, self.value_name)))
+
+    @property
+    def value_name(self):
+        return "value_{}".format(self.type.lower())
+
+    @property
+    def modified(self):
+        return self.hash != self.original_hash
+
+    def get_items(self, context):
+        return []
+
+    original_hash = bpy.props.StringProperty(name="Hash")
+    name = bpy.props.StringProperty(name="Name")
+    type = bpy.props.EnumProperty(name="Type", items=TYPE_ENUMS)
+
+    value_int = bpy.props.IntProperty()
+    value_float = bpy.props.FloatProperty()
+    value_string = bpy.props.StringProperty()
+    value_bool = bpy.props.BoolProperty()
+    value_enum = bpy.props.EnumProperty(items=get_items)
+
+
+bpy.utils.register_class(ResolvedTemplateAttributeDefault)
+
+
 class TemplateClass(bpy.types.PropertyGroup):
 
     """PropertyGroup for Template items"""
 
     name = bpy.props.StringProperty(name="Name", default="", description="Name of template")
-    active = bpy.props.BoolProperty(name="Active", default=False, description="Use this template")
+    active = bpy.props.BoolProperty(name="Active", default=False, description="Use this template",
+                                    update=template_updated)
+    required = bpy.props.BoolProperty(name="Default", default=False)
 
+    defaults = bpy.props.CollectionProperty(name="Defaults", type=TemplateAttributeDefault)
+    defaults_active = bpy.props.IntProperty()
 
 bpy.utils.register_class(TemplateClass)
 
@@ -235,23 +360,30 @@ class StatesPanel(bpy.types.Panel):
 
     @classmethod
     def register(cls):
-        bpy.types.Object.states_index = bpy.props.IntProperty(default=0)
+        bpy.types.Object.states_index = bpy.props.IntProperty(default=0, update=state_changed)
         bpy.types.Object.states = bpy.props.CollectionProperty(name="Network States", type=StateGroup)
+        bpy.types.Object.simulated_states = bpy.props.BoolVectorProperty(name="Simulated States", size=30)
 
-    def draw_states_row(self, active_state, sub_layout):
+    def draw_states_row(self, data, name, layout, icon_func=None):
         top_i = 0
         bottom_i = 15
 
+        if icon_func is None:
+            icon_func = lambda index: 'BLANK1'
+
+        sub_layout = layout.column_flow(columns=3)
         for col_i in range(3):
             column = sub_layout.column(align=True)
             row = column.row(align=True)
             for _ in range(5):
-                row.prop(active_state, "states", index=top_i, toggle=True, text="")
+                icon = icon_func(top_i)
+                row.prop(data, name, index=top_i, toggle=True, text="", icon=icon)
                 top_i += 1
 
             row = column.row(align=True)
             for _ in range(5):
-                row.prop(active_state, "states", index=bottom_i, toggle=True, text="")
+                icon = icon_func(bottom_i)
+                row.prop(data, name, index=bottom_i, toggle=True, text="", icon=icon)
                 bottom_i += 1
 
     def draw(self, context):
@@ -259,18 +391,27 @@ class StatesPanel(bpy.types.Panel):
 
         obj = context.object
 
-        layout.template_list('RENDER_RT_StateList', "States", obj, "states", obj, "states_index", rows=3)
+        sub_layout = layout.split(0.3)
+        sub_layout.label("Simulated States")
+
+        box = sub_layout.box()
+        self.draw_states_row(obj, 'simulated_states', box)
+
+        column = box.column()
+        set_states = column.operator("network.save_states", icon='FILE_REFRESH', text="")
+        set_states.set_simulated = True
+
+        layout.label("Netmode States")
+        sub_layout = layout.split(0.3)
+        sub_layout.template_list('RENDER_RT_StateList', "States", obj, "states", obj, "states_index", rows=3)
 
         active_state = get_active_item(obj.states, obj.states_index)
         if active_state is None:
             return
 
-        sub_layout = layout.split(0.3)
-        sub_layout.label("States")
-
         box = sub_layout.box()
-        sub_layout = box.column_flow(columns=3)
-        self.draw_states_row(active_state, sub_layout)
+        simulated_icon = lambda i: 'KEY_HLT' if obj.simulated_states[i] else 'BLANK1'
+        self.draw_states_row(active_state, 'states', box, icon_func = simulated_icon)
 
         column = box.column()
         column.operator("network.save_states", icon='FILE_REFRESH', text="")
@@ -319,6 +460,9 @@ class TemplatesPanel(bpy.types.Panel):
     def register(cls):
         bpy.types.Object.templates_index = bpy.props.IntProperty(default=0)
         bpy.types.Object.templates = bpy.props.CollectionProperty(name="Templates", type=TemplateModule)
+        bpy.types.Object.template_defaults = bpy.props.CollectionProperty(name="TemplateDefaults",
+                                                                          type=ResolvedTemplateAttributeDefault)
+        bpy.types.Object.templates_defaults_index = bpy.props.IntProperty(default=0)
 
     def draw(self, context):
         layout = self.layout
@@ -339,16 +483,17 @@ class TemplatesPanel(bpy.types.Panel):
 
         column = layout.column()
         column.label("Template Classes")
-        column.template_list('RENDER_RT_TemplateList', "TemplateItem", active_template, "templates", active_template,
+        column.template_list('RENDER_RT_TemplateList', "TemplateItems", active_template, "templates", active_template,
                              "templates_active", rows=3)
+
+        if active_template is None:
+            return
 
         row = layout.row()
         row.label("Template Attributes")
 
-        box = layout.box()
-        box.prop(obj, "network_role")
-        box.active = obj.use_network
-
+        layout.template_list('RENDER_RT_TemplateDefaultList', "TemplateItemDefaults", obj, "template_defaults",
+                             obj, "templates_defaults_index", rows=3)
 
 
 class NetworkPanel(bpy.types.Panel):
@@ -366,25 +511,22 @@ class NetworkPanel(bpy.types.Panel):
     def register(cls):
         bpy.types.Object.use_network = bpy.props.BoolProperty(default=False, name="Use Networking",
                                                               description="Enable replication for this object")
-        bpy.types.Object.network_role = bpy.props.EnumProperty(name="Network Role",
-                                                               description="Establish a network role for this object",
-                                                               items=ROLES_ENUMS)
+        bpy.types.Object.remote_role = bpy.props.EnumProperty(name="Remote Role",
+                                                              description="Establish a network role for this object",
+                                                              items=ROLES_ENUMS, default="SIMULATED_PROXY")
 
     def draw(self, context):
         layout = self.layout
         obj = context.object
 
         layout.prop(obj, "use_network", icon='AUTOMERGE_ON' if obj.use_network else 'AUTOMERGE_OFF')
+        layout.prop(obj, "remote_role")
 
 
 class RENDER_RT_StateList(bpy.types.UIList):
 
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
-        sub_layout = layout.split(0.8)
-        sub_layout.label(item.name, icon="NONE")
-
-        view = sub_layout.operator("network.set_states_visible", icon='RESTRICT_VIEW_OFF', text="Go To State")
-        view.index = index
+        layout.label(item.name, icon="NONE")
 
 
 class RENDER_RT_RPCArgumentList(bpy.types.UIList):
@@ -416,6 +558,15 @@ class RENDER_RT_AttributeList(bpy.types.UIList):
         row.prop(item, "replicate", text="", icon=attr_icon, emboss=False)
 
 
+class RENDER_RT_TemplateDefaultList(bpy.types.UIList):
+
+    def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
+        layout.label(item.name, icon="NONE")
+        row = layout.row(align=True)
+        value_name = item.value_name
+        row.prop(item, value_name, text="")
+
+
 class RENDER_RT_RPCList(bpy.types.UIList):
 
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
@@ -442,7 +593,8 @@ class RENDER_RT_TemplateList(bpy.types.UIList):
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
         layout.label(icon='SCRIPTPLUGINS', text=item.name)
 
-        layout.prop(item, "active", text="")
+        if not item.required:
+            layout.prop(item, "active", text="")
 
 
 class LOGIC_OT_add_rpc(bpy.types.Operator):
@@ -519,7 +671,7 @@ class LOGIC_OT_remove_template(bpy.types.Operator):
     def execute(self, context):
         obj = context.active_object
         active_template = get_active_item(obj.templates, obj.templates_index)
-        if not active_template.name in ENTITY_BASES:
+        if not active_template.name in DEFAULT_TEMPLATE_MODULES:
             obj.templates.remove(obj.templates_index)
 
         return {'FINISHED'}
@@ -530,13 +682,21 @@ class LOGIC_OT_save_states(bpy.types.Operator):
     bl_idname = "network.save_states"
     bl_label = "Save logic states for this netmode"
 
+    set_simulated = bpy.props.BoolProperty(default=False)
+
     @classmethod
     def poll(cls, context):
         return context.active_object is not None
 
     def execute(self, context):
         obj = context.active_object
-        obj.states[obj.states_index].states = obj.game.states_visible
+        if self.set_simulated:
+            states = obj.simulated_states
+
+        else:
+            states = obj.states[obj.states_index].states
+
+        states[:] = obj.game.states_visible
 
         return {'FINISHED'}
 
@@ -567,6 +727,43 @@ class LOGIC_OT_set_states_visible(bpy.types.Operator):
         return {'FINISHED'}
 
 
+def determine_mro(*bases):
+    """Calculate the Method Resolution Order of bases using the C3 algorithm.
+
+    Suppose you intended creating a class K with the given base classes. This
+    function returns the MRO which K would have, *excluding* K itself (since
+    it doesn't yet exist), as if you had actually created the class.
+
+    Another way of looking at this, if you pass a single class K, this will
+    return the linearization of K (the MRO of K, *including* itself).
+    """
+    seqs = [list(C.__mro__) for C in bases] + [list(bases)]
+    res = []
+    while True:
+        non_empty = list(filter(None, seqs))
+        if not non_empty:
+            # Nothing left to process, we're done.
+            return tuple(res)
+
+        for seq in non_empty:  # Find merge candidates among seq heads.
+            candidate = seq[0]
+            not_head = [s for s in non_empty if candidate in s[1:]]
+            if not_head:
+                # Reject the candidate.
+                candidate = None
+            else:
+                break
+
+        if not candidate:
+            raise TypeError("inconsistent hierarchy, no C3 MRO is possible")
+
+        res.append(candidate)
+        for seq in non_empty:
+            # Remove candidate.
+            if seq[0] == candidate:
+                del seq[0]
+
+
 def get_active_item(collection, index):
     if index >= len(collection):
         return None
@@ -574,7 +771,23 @@ def get_active_item(collection, index):
     return collection[index]
 
 
-def update_collection(source, destination):
+def update_item(source, destination, destination_data=None):
+    try:
+        item_dict = dict(source.items())
+
+    except TypeError:
+        invalid_members = list(dir(bpy.types.Struct)) + ['rna_type']
+        item_dict = {k: getattr(source, k) for k in dir(source) if not k in invalid_members}
+
+    if destination_data is not None:
+        item_dict.update(destination_data)
+        pass
+
+    for key, value in item_dict.items():
+        destination[key] = value
+
+
+def update_collection(source, destination, debug=0):
     original = {}
 
     for prop in destination:
@@ -584,25 +797,7 @@ def update_collection(source, destination):
 
     for prop in source:
         attr = destination.add()
-
-        try:
-            item_dict = dict(prop.items())
-
-        except TypeError:
-            invalid_members = list(dir(bpy.types.Struct)) + ['rna_type']
-            item_dict = {k: getattr(prop, k) for k in dir(prop) if not k in invalid_members}
-
-        try:
-            original_items = original[prop.name]
-
-        except KeyError:
-            pass
-
-        else:
-            item_dict.update(original_items)
-
-        for key, value in item_dict.items():
-            attr[key] = value
+        update_item(prop, attr, original.get(prop.name))
 
 
 update_handlers = []
@@ -664,9 +859,11 @@ def on_save(dummy):
                                           'target': r.target, 'reliable': r.reliable,
                                           'simulated': r.simulated} for r in obj.rpc_calls}
 
-            data['templates'] = ["{}.{}".format(g.name, t.name) for g in obj.templates for t in g.templates
-                                 if t.active]
-            data['states'] = {c.name: c.state_mask for c in obj.states}
+            data['templates'] = ["{}.{}".format(g.name, t.name) for g in obj.templates for t in g.templates if t.active]
+            data['defaults'] = {d.name: getattr(d, d.value_name) for d in obj.template_defaults if d.modified}
+            data['states'] = {c.name: list(c.states) for c in obj.states}
+            data['simulated_states'] = list(obj.simulated_states)
+            data['remote_role'] = obj.remote_role
 
             makedirs(path.dirname(filepath), exist_ok=True)
             with open(filepath, "w") as file:
@@ -709,19 +906,19 @@ def update_attributes(context):
     attributes = obj.attributes
 
     update_collection(obj.game.properties, attributes)
-
     for rpc_call in obj.rpc_calls:
         valid_props = [p for p in obj.game.properties if not prop_is_replicated(p, attributes)]
-        update_collection(valid_props, rpc_call.arguments)
+        update_collection(valid_props, rpc_call.arguments,1)
 
     if not obj.states:
         server = obj.states.add()
+
         server.name = "Server"
-        server.state_mask = 2
+        server.states[1] = True
 
         client = obj.states.add()
         client.name = "Client"
-        client.state_mask = 1
+        client.states[0] = True
 
 
 def update_message_listener(context):
@@ -767,8 +964,11 @@ def update_network_logic(context):
 @bpy.app.handlers.persistent
 def clean_modules(dummy):
     """Free any imported modules I.E Network to prevent state error"""
-    for mod_name in set(sys.modules).difference(ORIGINAL_MODULES):
+    unwanted_modules = set(sys.modules).difference(ORIGINAL_MODULES)
+    for mod_name in unwanted_modules:
         sys.modules.pop(mod_name)
+
+    return unwanted_modules
 
 
 def update_templates(context):
@@ -776,7 +976,7 @@ def update_templates(context):
     if not obj:
         return
 
-    for module_path in ENTITY_BASES:
+    for module_path in DEFAULT_TEMPLATE_MODULES:
         if module_path in obj.templates:
             continue
 
@@ -804,7 +1004,9 @@ def update_templates(context):
     templates = template_module.templates
     templates.clear()
 
+    required_templates = []
     for name, value in getmembers(module):
+
         if name.startswith("_"):
             continue
 
@@ -814,10 +1016,36 @@ def update_templates(context):
         if not issubclass(value, Replicable) or value is Replicable:
             continue
 
+        if name in HIDDEN_BASES:
+            continue
+
         template = templates.add()
         template.name = name
+        if name in DEFAULT_TEMPLATE_MODULES.get(template_path, []):
+            required_templates.append(template)
+
+        # Store the default attribute values
+        defaults = template.defaults
+        ui_types = int, bool, str, float
+        for name, value in getmembers(value):
+            if name.startswith("_"):
+                continue
+
+            value_type = type(value)
+            if not value_type in ui_types:
+                continue
+
+            default = defaults.add()
+            default.name = name
+            default.type = type_to_enum_type(value_type)
+
+            value_name = default.value_name
+            setattr(default, value_name, value)
 
     template_module.loaded = True
+
+    for template in required_templates:
+        template.required = template.active = True
 
 
 update_handlers.append(update_attributes)
@@ -840,3 +1068,7 @@ def unregister():
     bpy.app.handlers.save_post.remove(on_save)
     bpy.app.handlers.game_pre.remove(on_save)
     bpy.app.handlers.game_pre.remove(clean_modules)
+
+
+    unloaded = clean_modules(None)
+    print("Unloaded {}".format(unloaded))

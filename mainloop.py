@@ -1,5 +1,5 @@
 from network.descriptors import Attribute
-from network.decorators import with_tag, reliable, simulated
+from network.decorators import with_tag, reliable, simulated, set_annotation, requires_permission
 from network.enums import Netmodes, Roles
 from network.network import Network
 from network.replicable import Replicable
@@ -12,7 +12,6 @@ from game_system.resources import ResourceManager
 from game_system.entities import Actor as _Actor
 from game_system.signals import LogicUpdateSignal, TimerUpdateSignal, PlayerInputSignal
 from game_system.timer import Timer
-
 
 from collections import defaultdict, OrderedDict
 from json import load, loads, dumps
@@ -46,6 +45,10 @@ configurations = {}
 sorted_rpc_arguments = {}
 
 
+class RegisterStateSignal(Signal):
+    pass
+
+
 class SCA_Actor(_Actor):
     """Interface for SCA_ system with network system"""
 
@@ -67,11 +70,15 @@ class SCA_Actor(_Actor):
         for handler in self.rpc_handlers:
             handler(name, data)
 
-    def update(self, delta_time):
+    def update(self, dt):
         pass
 
 
 class BpyResolver:
+
+    @staticmethod
+    def resolve_role(value):
+        return getattr(Roles, value.lower())
 
     @staticmethod
     def resolve_netmode(value):
@@ -79,10 +86,7 @@ class BpyResolver:
 
         :param value: enum value
         """
-        if value.upper() == "SERVER":
-            return Netmodes.server
-
-        return Netmodes.client
+        return getattr(Netmodes, value.lower())
 
     @staticmethod
     def resolve_type(type_):
@@ -156,6 +160,8 @@ def load_configuration(name):
     for function_name, data in loaded['rpc_calls'].items():
         data['arguments'] = {k: BpyResolver.resolve_type(v) for k, v in data['arguments'].items()}
         data['target'] = BpyResolver.resolve_netmode(data['target'])
+
+    loaded['remote_role'] = BpyResolver.resolve_role(loaded['remote_role'])
 
     return loaded
 
@@ -240,6 +246,24 @@ if WITH_BGE:
 
         logic.sendMessage(subject, "")
 
+    class StateManager(SignalListener):
+        """Manages SCA state machine transitions"""
+
+        def __init__(self):
+            self.register_signals()
+
+            self.callbacks = []
+
+        @RegisterStateSignal.global_listener
+        def handle_signal(self, callback):
+            self.callbacks.append(callback)
+
+        def update(self):
+            for callback in self.callbacks:
+                callback()
+
+            self.callbacks.clear()
+
     class SignalForwarder(SignalListener):
         """Forward all globally available signals to handler"""
 
@@ -263,17 +287,15 @@ if WITH_BGE:
             self._rpc_args = sorted_rpc_arguments[obj.name]
             self._entity = entity
             self._obj = obj
+            self._configuration = configurations[obj.name]
 
             entity.notify_handlers.append(self.notify_handler)
             entity.rpc_handlers.append(self.rpc_handler)
 
-            # Transition to netmode state
-            configuration = configurations[obj.name]
-
-            self.set_network_state(obj, configuration)
             self.convert_message_logic(obj, entity.instance_id)
-
             SETUP_REPLICABLES[entity] = obj
+
+            RegisterStateSignal.invoke(self.set_network_state)
 
         def get(self, name):
             return self._obj[name]
@@ -305,23 +327,47 @@ if WITH_BGE:
                 message_handler.subject = prefix + dumps((name, instance_id))
 
         @staticmethod
-        def set_network_state(obj, configuration):
+        def get_state_mask(states):
+            mask = 0
+            for i, value in enumerate(states):
+                mask |= value << i
+
+            return mask
+
+        def set_network_state(self):
             """Unset any states from other netmodes, then set correct states
-
-            :param obj: GameObject
-            :param configuration: configuration data
             """
-            masks = configuration['states']
-            netmode = WorldInfo.netmode
+            states = self._configuration['states']
+            simulated_states = self._configuration['simulated_states']
 
-            state = obj.state
-            for mask_netmode, mask in masks.items():
+            netmode = WorldInfo.netmode
+            state = self._obj.state
+            get_mask = self.get_state_mask
+
+            for mask_netmode, netmode_states in states.items():
                 if mask_netmode == netmode:
                     continue
 
-                state &=~ mask
+                state &= ~get_mask(netmode_states)
 
-            obj.state = state | masks[netmode]
+            simulated_proxy = Roles.simulated_proxy
+
+            try:
+                roles = self._entity.roles
+
+            except AttributeError:
+                pass
+
+            # Set active states if simulated
+            else:
+                local_role = roles.local
+                active_states = states[netmode]
+                for i, (state_bit, simulated_bit) in enumerate(zip(active_states, simulated_states)):
+                    # Permission checks
+                    if local_role > simulated_proxy or (simulated_bit and local_role == simulated_proxy):
+                        state |= state_bit << i
+
+            self._obj.state = state
 
         def notify_handler(self, event_name):
             message_id = NOTIFICATION_PREFIX + dumps((event_name, self._entity.instance_id))
@@ -410,7 +456,6 @@ if WITH_BGE:
 
                 namespace[class_name] = new_cls
 
-            namespace['SCA_Actor'] = SCA_Actor
             return namespace
 
         @classmethod
@@ -427,7 +472,14 @@ if WITH_BGE:
             attributes = configuration['attributes']
             attribute_definitions = [cls.create_attribute_string(attr_name, data) for attr_name, data
                                      in attributes.items()]
+
+            # Add remote role
+            remote_role = configuration['remote_role']
+            roles_data = dict(default="Roles(Roles.authority, {})".format(remote_role), notify=False)
+            attribute_definitions.append(cls.create_attribute_string("roles", roles_data))
+
             class_lines.extend(attribute_definitions)
+
             rpc_calls = configuration['rpc_calls']
             rpc_definitions = [cls.create_rpc_string(function_name, data) for function_name, data in rpc_calls.items()]
             class_lines.extend([y for c in rpc_definitions for y in c.split("\n")])
@@ -438,6 +490,10 @@ if WITH_BGE:
             if attributes:
                 sync_definition = cls.create_property_synchronisation(attributes)
                 class_lines.extend(sync_definition.split("\n"))
+
+            default_values = configuration['defaults']
+            class_lines.extend(["{} = {}".format(name, "'" + value + "'" if isinstance(value, str) else value)
+                                for name, value in default_values.items()])
 
             class_body = "\n\t".join(class_lines)
 
@@ -470,6 +526,7 @@ if WITH_BGE:
         physics = PhysicsSystem()
 
         signal_forwarder = SignalForwarder(signal_to_message)
+        state_manager = StateManager()
 
         # Main loop
         accumulator = 0.0
@@ -479,6 +536,9 @@ if WITH_BGE:
 
         for scene in logic.getSceneList():
             load_object_definitions(scene)
+
+        # Update any subscriptions
+        update_graphs()
 
         # Fixed time-step
         while not requires_exit.value:
@@ -526,6 +586,8 @@ if WITH_BGE:
 
                 network.receive()
                 update_graphs()
+
+                state_manager.update()
 
                 bge.logic.NextFrame()
 
