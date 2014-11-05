@@ -598,7 +598,7 @@ class RENDER_RT_TemplateList(bpy.types.UIList):
 
 
 class LOGIC_OT_add_rpc(bpy.types.Operator):
-    """Tooltip"""
+    """Add a new RPC call"""
     bl_idname = "network.add_rpc_call"
     bl_label = "Add RPC call"
 
@@ -614,7 +614,7 @@ class LOGIC_OT_add_rpc(bpy.types.Operator):
 
 
 class LOGIC_OT_remove_rpc(bpy.types.Operator):
-    """Tooltip"""
+    """Delete selected RPC call"""
     bl_idname = "network.remove_rpc_call"
     bl_label = "Remove RPC call"
 
@@ -630,7 +630,7 @@ class LOGIC_OT_remove_rpc(bpy.types.Operator):
 
 
 class LOGIC_OT_add_template(bpy.types.Operator):
-    """Tooltip"""
+    """Load templates from a module"""
     bl_idname = "network.add_template"
     bl_label = "Add template"
 
@@ -660,7 +660,7 @@ class LOGIC_OT_add_template(bpy.types.Operator):
 
 
 class LOGIC_OT_remove_template(bpy.types.Operator):
-    """Tooltip"""
+    """Unload templates from a module"""
     bl_idname = "network.remove_template"
     bl_label = "Remove template"
 
@@ -678,7 +678,7 @@ class LOGIC_OT_remove_template(bpy.types.Operator):
 
 
 class LOGIC_OT_save_states(bpy.types.Operator):
-    """Tooltip"""
+    """Write currently visible states to mask for this netmode"""
     bl_idname = "network.save_states"
     bl_label = "Save logic states for this netmode"
 
@@ -702,7 +702,7 @@ class LOGIC_OT_save_states(bpy.types.Operator):
 
 
 class LOGIC_OT_set_states_visible(bpy.types.Operator):
-    """Tooltip"""
+    """Read currently visible states from mask for this netmode"""
     bl_idname = "network.set_states_visible"
     bl_label = "Set the states for this netmode visible"
 
@@ -922,7 +922,7 @@ def update_attributes(context):
 
 
 def update_message_listener(context):
-    if DISPATCHER_NAME in context.scene.objects:
+    if DISPATCHER_NAME in bpy.data.objects:
         return
 
     bpy.ops.object.empty_add()

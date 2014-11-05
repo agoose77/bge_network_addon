@@ -57,18 +57,10 @@ class SCA_Actor(_Actor):
     def on_notify(self, name):
         super().on_notify(name)
         
-        for handler in self.notify_handlers:
-            handler(name)
+        self.addon.on_notify(name)
 
-    def on_initialised(self):
-        super().on_initialised()
-
-        self.rpc_handlers = []
-        self.notify_handlers = []
-
-    def _dispatch_rpc(self, name, data):
-        for handler in self.rpc_handlers:
-            handler(name, data)
+    def dispatch_rpc(self, name, data):
+        self.addon.dispatch_rpc(name, data)
 
     def update(self, dt):
         pass
@@ -289,9 +281,6 @@ if WITH_BGE:
             self._obj = obj
             self._configuration = configurations[obj.name]
 
-            entity.notify_handlers.append(self.notify_handler)
-            entity.rpc_handlers.append(self.rpc_handler)
-
             self.convert_message_logic(obj, entity.instance_id)
             SETUP_REPLICABLES[entity] = obj
 
@@ -369,12 +358,12 @@ if WITH_BGE:
 
             self._obj.state = state
 
-        def notify_handler(self, event_name):
+        def on_notify(self, event_name):
             message_id = NOTIFICATION_PREFIX + dumps((event_name, self._entity.instance_id))
             self._obj.sendMessage(message_id)
             logic.sendMessage(message_id, "")
 
-        def rpc_handler(self, event_name, data):
+        def dispatch_rpc(self, event_name, data):
             arguments = self._rpc_args[event_name]
 
             for name_, value in zip(arguments, data):
@@ -407,7 +396,7 @@ if WITH_BGE:
             simulated_decorator = "@simulated\n" if is_simulated else ""
 
             return """{reliable}{simulated}def {name}(self{args}) -> {returns}:\n\t"""\
-                   """self._dispatch_rpc('{name}', {all_args})"""\
+                   """self.dispatch_rpc('{name}', {all_args})"""\
                 .format(reliable=reliable_decorator, simulated=simulated_decorator, name=name, args=args_declaration,
                         returns=return_target, all_args=args_tuple)
 
@@ -505,7 +494,10 @@ if WITH_BGE:
             return base_namespaces[name]
 
     def main():
+        print("Networking enabled")
+
         # Load configuration
+        print("Loading network information from {}".format(DATA_PATH))
         file_path = logic.expandPath("//{}".format(DATA_PATH))
         main_definition_path = path.join(file_path, "main.definition")
 
@@ -522,25 +514,27 @@ if WITH_BGE:
         WorldInfo.netmode = BpyResolver.resolve_netmode(data['netmode'])
         WorldInfo.tick_rate = logic.getLogicTicRate()
 
+        print("Running as a {}".format(Netmodes[WorldInfo.netmode]))
+
         network = Network(host, port)
         physics = PhysicsSystem()
 
         signal_forwarder = SignalForwarder(signal_to_message)
         state_manager = StateManager()
 
-        # Main loop
-        accumulator = 0.0
-        last_time = last_sent_time = clock()
-
-        requires_exit = SignalValue(False)
-
+        print("Loading definitions from scene objects")
         for scene in logic.getSceneList():
             load_object_definitions(scene)
 
         # Update any subscriptions
         update_graphs()
 
-        # Fixed time-step
+        # Main loop
+        accumulator = 0.0
+        last_time = last_sent_time = clock()
+
+        print("Game started")
+        requires_exit = SignalValue(False)
         while not requires_exit.value:
             current_time = clock()
 
