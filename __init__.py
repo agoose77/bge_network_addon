@@ -60,9 +60,10 @@ ROLES_ENUMS = get_bpy_enum(Roles)
 CONFIGURATION_FILE = "configuration.json"
 LISTENER_PATH = "interface.listener"
 DATA_PATH = "network_data"
+RULES_FILENAME = "rules.py"
 MAINLOOP_FILENAME = "mainloop.py"
 INTERFACE_FILENAME = "interface.py"
-REQUIRED_FILES = MAINLOOP_FILENAME, INTERFACE_FILENAME
+REQUIRED_FILES = MAINLOOP_FILENAME, INTERFACE_FILENAME, RULES_FILENAME
 DISPATCHER_NAME = "DISPATCHER"
 DEFAULT_TEMPLATE_MODULES = {"game_system.entities": [], "mainloop": ("SCA_Actor",)}
 DEFAULT_BASES = "SCA_Actor",
@@ -561,7 +562,8 @@ class RENDER_RT_AttributeList(bpy.types.UIList):
 class RENDER_RT_TemplateDefaultList(bpy.types.UIList):
 
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
-        layout.label(item.name, icon="NONE")
+        item_name = item.name.replace("_", " ").title()
+        layout.label(item_name, icon="NONE")
         row = layout.row(align=True)
         value_name = item.value_name
         row.prop(item, value_name, text="")
@@ -572,7 +574,7 @@ class RENDER_RT_RPCList(bpy.types.UIList):
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
         network_mode = context.scene.network_mode
 
-        direction_icon = 'TRIA_UP' if network_mode == item.target else 'TRIA_DOWN'
+        direction_icon = 'TRIA_RIGHT' if network_mode == item.target else 'TRIA_LEFT'
         layout.prop(item, "name", icon=direction_icon, text="", emboss=False)
 
         reliable_icon = 'LIBRARY_DATA_DIRECT' if item.reliable else 'LIBRARY_DATA_INDIRECT'
@@ -921,26 +923,6 @@ def update_attributes(context):
         client.states[0] = True
 
 
-def update_message_listener(context):
-    if DISPATCHER_NAME in bpy.data.objects:
-        return
-
-    bpy.ops.object.empty_add()
-    empty = context.object
-
-    empty.location = (0.0, 0.0, 0.0)
-
-    bpy.ops.logic.sensor_add(type='MESSAGE')
-    bpy.ops.logic.controller_add(type='PYTHON')
-
-    empty.game.sensors[0].link(empty.game.controllers[0])
-    empty.game.controllers[0].mode = 'MODULE'
-    empty.game.controllers[0].module = LISTENER_PATH
-    empty.game.controllers[0].states = 30
-
-    empty.name = DISPATCHER_NAME
-
-
 def update_network_logic(context):
     scene = context.scene
 
@@ -1050,7 +1032,6 @@ def update_templates(context):
 
 update_handlers.append(update_attributes)
 update_handlers.append(update_network_logic)
-update_handlers.append(update_message_listener)
 update_handlers.append(update_templates)
 
 
