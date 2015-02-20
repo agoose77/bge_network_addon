@@ -7,16 +7,16 @@ from network.signals import SignalValue, DisconnectSignal, Signal, SignalListene
 from network.type_flag import TypeFlag
 from network.world_info import WorldInfo
 
-from game_system.physics import PhysicsSystem
 from game_system.resources import ResourceManager
 from game_system.entities import Actor as _Actor
 from game_system.signals import LogicUpdateSignal, TimerUpdateSignal, PlayerInputSignal
 from game_system.timer import Timer
 
-from collections import defaultdict, OrderedDict
+from collections import defaultdict, OrderedDict, deque
 from json import load, loads, dumps
 from os import path, listdir
 from time import clock
+from math import log
 
 
 try:
@@ -28,6 +28,9 @@ except ImportError:
 else:
     WITH_BGE = True
 
+
+CONTROLLER_ASSIGN_PREFIX = "CONTROLLER_ASSIGN_"
+CONTROLLER_REQUEST_MESSAGE = "CONTROLLER_REQUEST"
 
 RPC_PREFIX = "RPC_"
 NOTIFICATION_PREFIX = "NOTIFY_"
@@ -45,6 +48,14 @@ configurations = {}
 sorted_rpc_arguments = {}
 
 
+class ControllerPendingAssignmentSignal(Signal):
+    pass
+
+
+class ControllerAssignedSignal(Signal):
+    pass
+
+
 class RegisterStateSignal(Signal):
     pass
 
@@ -52,15 +63,15 @@ class RegisterStateSignal(Signal):
 class SCA_Actor(_Actor):
     """Interface for SCA_ system with network system"""
 
-    component_tags = tuple(_Actor.component_tags) + ("addon",)
+    component_tags = tuple(_Actor.component_tags) + ("bge_addon",)
 
     def on_notify(self, name):
         super().on_notify(name)
-        
-        self.addon.on_notify(name)
+
+        self.bge_addon.on_notify(name)
 
     def dispatch_rpc(self, name, data):
-        self.addon.dispatch_rpc(name, data)
+        self.bge_addon.dispatch_rpc(name, data)
 
     def update(self, dt):
         pass
@@ -105,6 +116,14 @@ class GameObjectInjector:
         return cls._default_load(definition)
 
 
+def find_controller_assignment(subjects):
+    for subject in subjects:
+        if not subject.startswith(CONTROLLER_ASSIGN_PREFIX):
+            continue
+
+        return subject[len(CONTROLLER_ASSIGN_PREFIX):]
+
+
 def determine_rpc_calls(subjects):
     """Extract message subjects which belong to RPC calls
 
@@ -131,6 +150,14 @@ def instantiate_actor_from_obj(obj):
     return cls(network_id, register_immediately=True)
 
 
+def no_op_func(*arsg, **kwargs):
+    return None
+
+
+def raise_not_implemented(*args, **kwargs):
+    raise NotImplementedError("Physics isn't exposed in this build of Blender")
+
+
 def load_configuration(name):
     """Load configuration data for GameObject
 
@@ -138,11 +165,7 @@ def load_configuration(name):
     """
 
     resource = ResourceManager[name]
-
-    if resource is None:
-        raise FileNotFoundError("No configuration exists for {}".format(name))
-
-    config_path = ResourceManager.from_relative_path(resource['actor.definition'])
+    config_path = ResourceManager.get_absolute_path(resource['actor.definition'])
 
     with open(config_path, 'r') as file:
         loaded = load(file)
@@ -182,93 +205,269 @@ def load_object_definitions(scene):
         classes[name] = ReplicableFactory.from_configuration(name, configuration)
 
 
+def message_listener_rpc(subjects):
+    rpc_messages = determine_rpc_calls(subjects)
+
+    for network_id, rpc_names in rpc_messages.items():
+
+        try:
+            replicable = WorldInfo.get_replicable(network_id)
+
+        except LookupError:
+            continue
+
+        obj = SETUP_REPLICABLES[replicable]
+        obj_name = obj.name
+        sorted_rpc_args = sorted_rpc_arguments[obj_name]
+
+        for rpc_name in rpc_names:
+            rpc_args = sorted_rpc_args[rpc_name]
+            rpc_data = [obj[arg_name] for arg_name in rpc_args]
+
+            getattr(replicable, rpc_name)(*rpc_data)
+
+
+def message_listener_controller_assignment(subjects):
+    replicable_class_name = find_controller_assignment(subjects)
+    if replicable_class_name is not None:
+        ControllerAssignedSignal.invoke(replicable_class_name)
+
+
+message_subject_handlers = [message_listener_controller_assignment, message_listener_rpc]
+
+
+def listener(cont):
+    """Dispatch messages to listeners
+
+    :param cont: controller instance
+    """
+    message_sens = next(c for c in cont.sensors if isinstance(c, types.KX_NetworkMessageSensor))
+
+    if not message_sens.positive:
+        return
+
+    subjects = message_sens.subjects
+    for handler in message_subject_handlers:
+        handler(subjects)
+
+
+def update_graphs():
+    """Update isolated resource graphs"""
+    Replicable.update_graph()
+    Signal.update_graph()
+
+
+def signal_to_message(*args, signal, target, **kwargs):
+    """Produce message representation of signal"""
+    signal_name = signal.__name__
+
+    if target is not None and isinstance(target, Replicable):
+        subject = TARGETED_SIGNAL_PREFIX + dumps((signal_name, target.instance_id))
+
+    else:
+        subject = GLOBAL_SIGNAL_PREFIX + signal_name
+
+    logic.sendMessage(subject, "")
+
+
+class StateManager(SignalListener):
+    """Manages SCA state machine transitions"""
+
+    def __init__(self):
+        self.register_signals()
+
+        self.callbacks = []
+
+    @RegisterStateSignal.on_global
+    def handle_signal(self, callback):
+        self.callbacks.append(callback)
+
+    def update(self):
+        for callback in self.callbacks:
+            callback()
+
+        self.callbacks.clear()
+
+
+class SignalForwarder(SignalListener):
+    """Forward all globally available signals to handler"""
+
+    def __init__(self, handler):
+        self.register_signals()
+
+        self._handler = handler
+
+    @Signal.on_global
+    def handle_signal(self, *args, signal, target, **kwargs):
+        self._handler(signal, *args, signal=signal, target=target, **kwargs)
+
+
+class ReplicableFactory:
+
+    @classmethod
+    def create_rpc_string(cls, name, data):
+        """Construct RPC call from configuration data
+
+        :param name: name of RPC call
+        :param data: configuration data
+        """
+        arguments = data['arguments']
+        argument_names = sorted(arguments)
+
+        annotated_arguments = ["{}:TypeFlag({})".format(k, arguments[k].__name__) for k in argument_names]
+        args_declaration = ", {}".format(','.join(annotated_arguments)) if argument_names else ""
+        args_tuple = "({}{})".format(','.join(argument_names), ',' if argument_names else '')
+
+        is_reliable = data['reliable']
+        is_simulated = data['simulated']
+        return_target = data['target']
+
+        reliable_decorator = "@reliable\n" if is_reliable else ""
+        simulated_decorator = "@simulated\n" if is_simulated else ""
+
+        return """{reliable}{simulated}def {name}(self{args}) -> {returns}:\n\t"""\
+               """self.dispatch_rpc('{name}', {all_args})"""\
+            .format(reliable=reliable_decorator, simulated=simulated_decorator, name=name, args=args_declaration,
+                    returns=return_target, all_args=args_tuple)
+
+    @classmethod
+    def create_property_synchronisation(cls, attributes):
+        setter_lines = ["self.{name} = self.bge_addon.get('{name}')".format(name=name) for name in attributes]
+        getter_lines = ["self.bge_addon.set('{name}', self.{name})".format(name=name) for name in attributes]
+        switch = "if self.roles.local == Roles.authority:\n\t\t" + "\n\t\t".join(setter_lines)
+        switch += "\n\telse:\n\t\t" + "\n\t\t".join(getter_lines)
+
+        return """@simulated\n@LogicUpdateSignal.on_global\ndef update(self, delta_time):"""\
+               """\n\t{}\n\tsuper().update(delta_time)"""\
+            .format(switch)
+
+    @classmethod
+    def create_conditions_string(cls, attributes):
+        """Construct conditions generator from attribute names
+
+        :param attributes: sequence of names of attributes
+        """
+        yield_statements = ["yield '{}'".format(attr) for attr in attributes]
+        yield_body = "\n".join(yield_statements)
+        return """def conditions(self, is_owner, is_complaint, is_initial):\n\t"""\
+               """yield from super().conditions(is_owner, is_complaint, is_initial)\n\t{}""".format(yield_body)
+
+    @classmethod
+    def create_attribute_string(cls, name, data):
+        return "{} = Attribute({}, notify={})".format(name, data['default'], data['notify'])
+
+    @classmethod
+    def parse_bases(cls, base_paths):
+        namespace = OrderedDict()
+        for class_path in base_paths:
+            *module_path, class_name = class_path.split(".")
+            try:
+                module = __import__('.'.join(module_path), fromlist=[''])
+            except ImportError as err:
+                raise ImportError("Couldn't import template: {}".format(class_path)) from err
+
+            try:
+                new_cls = getattr(module, class_name)
+
+            except AttributeError as err:
+                raise AttributeError("Template module {}.py has no class {}".format(module.__name__, class_name)) \
+                    from err
+
+            namespace[class_name] = new_cls
+
+        return namespace
+
+    @classmethod
+    def from_configuration(cls, name, configuration):
+        """Construct class from definition file
+
+        :param name: name of class
+        :param configuration: configuration data
+        """
+        base_namespaces = cls.parse_bases(configuration['templates'])
+
+        class_lines = []
+
+        attributes = configuration['attributes']
+        attribute_definitions = [cls.create_attribute_string(attr_name, data) for attr_name, data
+                                 in attributes.items()]
+
+        # Add remote role
+        remote_role = configuration['remote_role']
+        roles_data = dict(default="Roles(Roles.authority, {})".format(remote_role), notify=False)
+        attribute_definitions.append(cls.create_attribute_string("roles", roles_data))
+
+        class_lines.extend(attribute_definitions)
+
+        rpc_calls = configuration['rpc_calls']
+        rpc_definitions = [cls.create_rpc_string(function_name, data) for function_name, data in rpc_calls.items()]
+        class_lines.extend([y for c in rpc_definitions for y in c.split("\n")])
+
+        conditions_definition = cls.create_conditions_string(attributes)
+        class_lines.extend(conditions_definition.split("\n"))
+
+        if attributes:
+            sync_definition = cls.create_property_synchronisation(attributes)
+            class_lines.extend(sync_definition.split("\n"))
+
+        default_values = configuration['defaults']
+        class_lines.extend(["{} = {}".format(name, "'" + value + "'" if isinstance(value, str) else value)
+                            for name, value in default_values.items()])
+
+        class_body = "\n\t".join(class_lines)
+
+        bases_string = ", ".join(base_namespaces.keys())
+        class_declaration = "class {}({}):\n\t".format(name, bases_string) + class_body
+
+        exec(class_declaration, globals(), base_namespaces)
+
+        return base_namespaces[name]
+
+
+class ConnectionManager(SignalListener):
+
+    def __init__(self):
+        self.register_signals()
+
+        self.pending_controllers = deque()
+
+    @staticmethod
+    def request_assignment():
+        logic.sendMessage(CONTROLLER_REQUEST_MESSAGE)
+
+    @ControllerPendingAssignmentSignal.on_global
+    def on_connection(self, controller):
+        self.pending_controllers.append(controller)
+
+        # Assume no code will listen for multiple messages
+        self.request_assignment()
+
+    @ControllerAssignedSignal.on_global
+    def on_assigned(self, replicable_name):
+        controller = self.pending_controllers.popleft()
+        cls = Replicable.from_type_name(replicable_name)
+        replicable = cls(register_immediately=True)
+        controller.possess(replicable)
+
+        # If still waiting, trigger controller
+        if self.pending_controllers:
+            self.request_assignment()
+
+
 if WITH_BGE:
     from bge import logic, types
 
     types.KX_PythonLogicLoop = type("", (), {})
+
+    from bge_game_system.inputs import BGEInputManager
+    from bge_game_system.physics import BGEPhysicsSystem
     from bge_game_system.definitions import BGEComponent, BGEComponentLoader
 
     GameObjectInjector._default_load, BGEComponentLoader.create_object = (BGEComponentLoader.create_object,
                                                                           GameObjectInjector.load)
     ResourceManager.data_path = bge.logic.expandPath("//{}".format(DATA_PATH))
 
-    def listener(cont):
-        """Intercept RPC messages and route through network
-
-        :param cont: controller instance
-        """
-        message_sens = next(c for c in cont.sensors if isinstance(c, types.KX_NetworkMessageSensor))
-
-        if not message_sens.positive:
-            return
-
-        messages = determine_rpc_calls(message_sens.subjects)
-        for network_id, rpc_names in messages.items():
-
-            try:
-                replicable = WorldInfo.get_replicable(network_id)
-
-            except LookupError:
-                continue
-
-            obj = SETUP_REPLICABLES[replicable]
-            obj_name = obj.name
-            sorted_rpc_args = sorted_rpc_arguments[obj_name]
-
-            for rpc_name in rpc_names:
-                rpc_args = sorted_rpc_args[rpc_name]
-                rpc_data = [obj[arg_name] for arg_name in rpc_args]
-
-                getattr(replicable, rpc_name)(*rpc_data)
-
-    def update_graphs():
-        """Update isolated resource graphs"""
-        Replicable.update_graph()
-        Signal.update_graph()
-
-    def signal_to_message(*args, signal, target, **kwargs):
-        """Produce message representation of signal"""
-        signal_name = signal.__name__
-
-        if target is not None and isinstance(target, Replicable):
-            subject = TARGETED_SIGNAL_PREFIX + dumps((signal_name, target.instance_id))
-
-        else:
-            subject = GLOBAL_SIGNAL_PREFIX + signal_name
-
-        logic.sendMessage(subject, "")
-
-    class StateManager(SignalListener):
-        """Manages SCA state machine transitions"""
-
-        def __init__(self):
-            self.register_signals()
-
-            self.callbacks = []
-
-        @RegisterStateSignal.global_listener
-        def handle_signal(self, callback):
-            self.callbacks.append(callback)
-
-        def update(self):
-            for callback in self.callbacks:
-                callback()
-
-            self.callbacks.clear()
-
-    class SignalForwarder(SignalListener):
-        """Forward all globally available signals to handler"""
-
-        def __init__(self, handler):
-            self.register_signals()
-
-            self._handler = handler
-
-        @Signal.global_listener
-        def handle_signal(self, *args, signal, target, **kwargs):
-            self._handler(signal, *args, signal=signal, target=target, **kwargs)
-
-    @with_tag("addon")
+    @with_tag("bge_addon")
     class BGESetupComponent(BGEComponent):
 
         def __init__(self, config_section, entity, obj):
@@ -333,10 +532,9 @@ if WITH_BGE:
             state = self._obj.state
             get_mask = self.get_state_mask
 
-            for mask_netmode, netmode_states in states.items():
-                if mask_netmode == netmode:
-                    continue
+            print(self._entity.roles, self._entity)
 
+            for mask_netmode, netmode_states in states.items():
                 state &= ~get_mask(netmode_states)
 
             simulated_proxy = Roles.simulated_proxy
@@ -356,6 +554,16 @@ if WITH_BGE:
                     if local_role > simulated_proxy or (simulated_bit and local_role == simulated_proxy):
                         state |= state_bit << i
 
+            if not state:
+                all_states = {1 << i for i in range(30)}
+                used_states = {c.state for c in self._obj.controllers}
+                try:
+                    state = (all_states - used_states).pop()
+                    state_index = int(log(state, 2)) + 1
+                    print("{}: Using default state of {}".format(self._obj.name, state_index))
+                except ValueError:
+                    print("{}: Required a default empty state, none available".format(self._obj.name))
+
             self._obj.state = state
 
         def on_notify(self, event_name):
@@ -371,127 +579,6 @@ if WITH_BGE:
 
             message_id = RPC_PREFIX + dumps((event_name, self._entity.instance_id))
             self._obj.sendMessage(message_id, "", self._obj.name)
-
-    class ReplicableFactory:
-
-        @classmethod
-        def create_rpc_string(cls, name, data):
-            """Construct RPC call from configuration data
-
-            :param name: name of RPC call
-            :param data: configuration data
-            """
-            arguments = data['arguments']
-            argument_names = sorted(arguments)
-
-            annotated_arguments = ["{}:TypeFlag({})".format(k, arguments[k].__name__) for k in argument_names]
-            args_declaration = ", {}".format(','.join(annotated_arguments)) if argument_names else ""
-            args_tuple = "({}{})".format(','.join(argument_names), ',' if argument_names else '')
-
-            is_reliable = data['reliable']
-            is_simulated = data['simulated']
-            return_target = data['target']
-
-            reliable_decorator = "@reliable\n" if is_reliable else ""
-            simulated_decorator = "@simulated\n" if is_simulated else ""
-
-            return """{reliable}{simulated}def {name}(self{args}) -> {returns}:\n\t"""\
-                   """self.dispatch_rpc('{name}', {all_args})"""\
-                .format(reliable=reliable_decorator, simulated=simulated_decorator, name=name, args=args_declaration,
-                        returns=return_target, all_args=args_tuple)
-
-        @classmethod
-        def create_property_synchronisation(cls, attributes):
-            setter_lines = ["self.{name} = self.addon.get('{name}')".format(name=name) for name in attributes]
-            getter_lines = ["self.addon.set('{name}', self.{name})".format(name=name) for name in attributes]
-            switch = "if self.roles.local == Roles.authority:\n\t\t" + "\n\t\t".join(setter_lines)
-            switch += "\n\telse:\n\t\t" + "\n\t\t".join(getter_lines)
-
-            return """@simulated\n@LogicUpdateSignal.global_listener\ndef update(self, delta_time):"""\
-                   """\n\t{}\n\tsuper().update(delta_time)"""\
-                .format(switch)
-
-        @classmethod
-        def create_conditions_string(cls, attributes):
-            """Construct conditions generator from attribute names
-
-            :param attributes: sequence of names of attributes
-            """
-            yield_statements = ["yield '{}'".format(attr) for attr in attributes]
-            yield_body = "\n".join(yield_statements)
-            return """def conditions(self, is_owner, is_complaint, is_initial):\n\t"""\
-                   """yield from super().conditions(is_owner, is_complaint, is_initial)\n\t{}""".format(yield_body)
-
-        @classmethod
-        def create_attribute_string(cls, name, data):
-            return "{} = Attribute({}, notify={})".format(name, data['default'], data['notify'])
-
-        @classmethod
-        def parse_bases(cls, base_paths):
-            namespace = OrderedDict()
-            for class_path in base_paths:
-                *module_path, class_name = class_path.split(".")
-                try:
-                    module = __import__('.'.join(module_path), fromlist=[''])
-                except ImportError as err:
-                    raise ImportError("Couldn't import template: {}".format(class_path)) from err
-
-                try:
-                    new_cls = getattr(module, class_name)
-
-                except AttributeError as err:
-                    raise AttributeError("Template module {}.py has no class {}".format(module.__name__, class_name)) \
-                        from err
-
-                namespace[class_name] = new_cls
-
-            return namespace
-
-        @classmethod
-        def from_configuration(cls, name, configuration):
-            """Construct class from definition file
-
-            :param name: name of class
-            :param configuration: configuration data
-            """
-            base_namespaces = cls.parse_bases(configuration['templates'])
-
-            class_lines = []
-
-            attributes = configuration['attributes']
-            attribute_definitions = [cls.create_attribute_string(attr_name, data) for attr_name, data
-                                     in attributes.items()]
-
-            # Add remote role
-            remote_role = configuration['remote_role']
-            roles_data = dict(default="Roles(Roles.authority, {})".format(remote_role), notify=False)
-            attribute_definitions.append(cls.create_attribute_string("roles", roles_data))
-
-            class_lines.extend(attribute_definitions)
-
-            rpc_calls = configuration['rpc_calls']
-            rpc_definitions = [cls.create_rpc_string(function_name, data) for function_name, data in rpc_calls.items()]
-            class_lines.extend([y for c in rpc_definitions for y in c.split("\n")])
-
-            conditions_definition = cls.create_conditions_string(attributes)
-            class_lines.extend(conditions_definition.split("\n"))
-
-            if attributes:
-                sync_definition = cls.create_property_synchronisation(attributes)
-                class_lines.extend(sync_definition.split("\n"))
-
-            default_values = configuration['defaults']
-            class_lines.extend(["{} = {}".format(name, "'" + value + "'" if isinstance(value, str) else value)
-                                for name, value in default_values.items()])
-
-            class_body = "\n\t".join(class_lines)
-
-            bases_string = ", ".join(base_namespaces.keys())
-            class_declaration = "class {}({}):\n\t".format(name, bases_string) + class_body
-
-            exec(class_declaration, globals(), base_namespaces)
-
-            return base_namespaces[name]
 
     def main():
         print("Networking enabled")
@@ -517,7 +604,9 @@ if WITH_BGE:
         print("Running as a {}".format(Netmodes[WorldInfo.netmode]))
 
         network = Network(host, port)
-        physics = PhysicsSystem()
+        physics_manager = BGEPhysicsSystem(no_op_func, no_op_func)
+        input_manager = BGEInputManager()
+        connection_manager = ConnectionManager()
 
         signal_forwarder = SignalForwarder(signal_to_message)
         state_manager = StateManager()
@@ -589,15 +678,17 @@ if WITH_BGE:
                 TimerUpdateSignal.invoke(step_time)
 
                 # Update Player Controller inputs for client
+                input_manager.update()
+
                 if WorldInfo.netmode != Netmodes.server:
-                    PlayerInputSignal.invoke(step_time)
+                    PlayerInputSignal.invoke(step_time, input_manager.state)
                     update_graphs()
 
                 # Update main logic (Replicable update)
                 LogicUpdateSignal.invoke(step_time)
                 update_graphs()
 
-                physics.update(step_time)
+                physics_manager.update(step_time)
 
                 # Transmit new state to remote peer
                 is_full_update = ((current_time - last_sent_time) >= (1 / network_tick_rate))
