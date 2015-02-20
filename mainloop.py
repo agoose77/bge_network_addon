@@ -606,7 +606,9 @@ if WITH_BGE:
         network = Network(host, port)
         physics_manager = BGEPhysicsSystem(no_op_func, no_op_func)
         input_manager = BGEInputManager()
-        connection_manager = ConnectionManager()
+
+        if WorldInfo.netmode == Netmodes.server:
+            connection_manager = ConnectionManager()
 
         signal_forwarder = SignalForwarder(signal_to_message)
         state_manager = StateManager()
