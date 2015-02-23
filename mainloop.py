@@ -48,6 +48,13 @@ configurations = {}
 sorted_rpc_arguments = {}
 
 
+def safe_for_format(value):
+    if isinstance(value, str):
+        return "'{}'".format(value)
+
+    return value
+
+
 class ControllerPendingAssignmentSignal(Signal):
     pass
 
@@ -353,8 +360,12 @@ class ReplicableFactory:
                """yield from super().conditions(is_owner, is_complaint, is_initial)\n\t{}""".format(yield_body)
 
     @classmethod
-    def create_attribute_string(cls, name, data):
-        return "{} = Attribute({}, notify={})".format(name, data['default'], data['notify'])
+    def create_attribute_string(cls, name, data, is_raw=False):
+        default = data['default']
+        if not is_raw:
+            default = safe_for_format(default)
+
+        return "{} = Attribute({}, notify={})".format(name, default, data['notify'])
 
     @classmethod
     def parse_bases(cls, base_paths):
@@ -391,11 +402,10 @@ class ReplicableFactory:
         attributes = configuration['attributes']
         attribute_definitions = [cls.create_attribute_string(attr_name, data) for attr_name, data
                                  in attributes.items()]
-
         # Add remote role
         remote_role = configuration['remote_role']
         roles_data = dict(default="Roles(Roles.authority, {})".format(remote_role), notify=False)
-        attribute_definitions.append(cls.create_attribute_string("roles", roles_data))
+        attribute_definitions.append(cls.create_attribute_string("roles", roles_data, is_raw=True))
 
         class_lines.extend(attribute_definitions)
 
