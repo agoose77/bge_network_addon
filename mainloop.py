@@ -4,6 +4,7 @@ from network.enums import Netmodes, Roles
 from network.network import Network
 from network.replicable import Replicable
 from network.signals import SignalValue, DisconnectSignal, Signal, SignalListener
+from network.structures import factory_dict
 from network.type_flag import TypeFlag
 from network.world_info import WorldInfo
 
@@ -32,12 +33,14 @@ else:
 CONTROLLER_ASSIGN_PREFIX = "CONTROLLER_ASSIGN_"
 CONTROLLER_REASSIGN_PREFIX = "CONTROLLER_REASSIGN_"
 CONTROLLER_REQUEST_MESSAGE = "CONTROLLER_REQUEST"
+INITIALISER_PREFIX = "ON_INIT_"
 
 RPC_PREFIX = "RPC_"
 NOTIFICATION_PREFIX = "NOTIFY_"
 TARGETED_SIGNAL_PREFIX = "SIGNAL_"
 GLOBAL_SIGNAL_PREFIX = "GLOBAL_SIGNAL_"
-UNIQUE_PREFIXES = RPC_PREFIX, NOTIFICATION_PREFIX, TARGETED_SIGNAL_PREFIX, CONTROLLER_REASSIGN_PREFIX
+UNIQUE_PREFIXES = CONTROLLER_ASSIGN_PREFIX, RPC_PREFIX, NOTIFICATION_PREFIX, TARGETED_SIGNAL_PREFIX, \
+                  CONTROLLER_REASSIGN_PREFIX, INITIALISER_PREFIX
 DATA_PATH = "network_data"
 
 DELIMITER = ","
@@ -61,6 +64,14 @@ class ControllerPendingAssignmentSignal(Signal):
 
 
 class ControllerAssignedSignal(Signal):
+    pass
+
+
+class ControllerReassignedSignal(Signal):
+    pass
+
+
+class OnInitialisedMessageSignal(Signal):
     pass
 
 
@@ -135,7 +146,7 @@ def get_prefixed_messages(subjects, prefix):
 
 def get_bound_messages(subjects, prefix):
     """Return dictionary of identifier to body for bound messages"""
-    messages = defaultdict(list)
+    messages = factory_dict(list, dict_type=OrderedDict, provide_key=False)
     for combined in get_prefixed_messages(subjects, prefix):
         name, id_ = loads(combined)
         messages[id_].append(name)
@@ -143,7 +154,7 @@ def get_bound_messages(subjects, prefix):
     return messages
 
 
-def find_assigned_pawn_class(subjects):
+def find_assigned_message(subjects):
     """Return message for controller assignment"""
     for subject in subjects:
         if not subject.startswith(CONTROLLER_ASSIGN_PREFIX):
@@ -241,36 +252,57 @@ def message_listener_rpc(subjects):
 
 def message_listener_controller_assignment(subjects):
     """Handle connection controller initial pawn assignment"""
-    replicable_class_name = find_assigned_pawn_class(subjects)
+    combined = find_assigned_message(subjects)
+    if combined is None:
+        return
 
-    if replicable_class_name is not None:
-        ControllerAssignedSignal.invoke(replicable_class_name)
+    replicable_class_name, instance_id = loads(combined)
+    ControllerAssignedSignal.invoke(replicable_class_name, instance_id)
 
 
 def message_listener_controller_reassignment(subjects):
     """Handle connection controller subsequent pawn assignment"""
     reassignment_messages = get_bound_messages(subjects, CONTROLLER_REASSIGN_PREFIX)
     for network_id, replicable_names in reassignment_messages.items():
-        replicable_name = next(replicable_names)
-        print("PLS")
+        replicable_class_name = replicable_names[0]
+        ControllerReassignedSignal.invoke(replicable_class_name, network_id)
+
+
+def message_listener_on_initialised(subjects):
+    """Handle connection controller subsequent pawn assignment"""
+    initialiser_messages = get_bound_messages(subjects, INITIALISER_PREFIX)
+    for network_id, message_names in initialiser_messages.items():
+        for message_name in message_names:
+            OnInitialisedMessageSignal.invoke(message_name, network_id)
+
+
+message_subject_handlers = [message_listener_controller_assignment, message_listener_controller_reassignment,
+                            message_listener_rpc,
+                            message_listener_on_initialised]
+
+
+class PawnInitialisationManager(SignalListener):
+    """Handle initialisation of recently spawned pawns"""
+
+    def __init__(self):
+        self.initialisers_to_pawn = {}
+        self.register_signals()
+
+    def associate_pawn_with_initialiser(self, initialiser, pawn):
+        self.initialisers_to_pawn[initialiser] = pawn
+
+    @OnInitialisedMessageSignal.on_global
+    def forward_initialisation_message(self, subject, initialiser):
         try:
-            replicable_cls = Replicable.from_type_name(replicable_name)
+            pawn = self.initialisers_to_pawn[initialiser]
 
         except KeyError:
-            print("Controller pawn assignment requires valid object name, not {}".format(replicable_name))
-            continue
+            print("Unable to associate network id: {} with a spawned object".format(initialiser))
+            return
 
-        current_pawn = Replicable[network_id]
-        controller = current_pawn.uppermost
-
-        if controller is None:
-            print("Cannot reassign pawn from network object with no controller")
-            continue
-
-        new_pawn = replicable_cls(register_immediately=True)
-        controller.possess(new_pawn)
-
-message_subject_handlers = [message_listener_controller_assignment, message_listener_rpc]
+        message_id = INITIALISER_PREFIX + dumps((subject, pawn.instance_id))
+        # Send ONLY to this object (avoid positive feedback)
+        pawn.bge_addon.receive_message(message_id)
 
 
 def listener(cont):
@@ -297,6 +329,7 @@ def update_graphs():
 def signal_to_message(*args, signal, target, **kwargs):
     """Produce message representation of signal"""
     signal_name = signal.__name__
+    # TODO avoid feedback loop
 
     if target is not None and isinstance(target, Replicable):
         subject = TARGETED_SIGNAL_PREFIX + dumps((signal_name, target.instance_id))
@@ -304,7 +337,7 @@ def signal_to_message(*args, signal, target, **kwargs):
     else:
         subject = GLOBAL_SIGNAL_PREFIX + signal_name
 
-    logic.sendMessage(subject, "")
+    logic.sendMessage(subject)
 
 
 class StateManager(SignalListener):
@@ -487,16 +520,42 @@ def update(self, delta_time):
         return base_namespaces[name]
 
 
-class ConnectionManager(SignalListener):
+class ControllerManager(SignalListener):
 
-    def __init__(self):
-        self.register_signals()
-
+    def __init__(self, initialisation_manager):
         self.pending_controllers = deque()
+        self.initialisation_manager = initialisation_manager
+
+        self.register_signals()
 
     @staticmethod
     def request_assignment():
         logic.sendMessage(CONTROLLER_REQUEST_MESSAGE)
+
+    @ControllerReassignedSignal.on_global
+    def on_reassigned(self, replicable_name, original_id):
+        try:
+            replicable_cls = Replicable.from_type_name(replicable_name)
+
+        except KeyError:
+            print("Controller pawn assignment requires valid object name, not {}".format(replicable_name))
+            return
+
+        current_pawn = Replicable[original_id]
+        controller = current_pawn.uppermost
+
+        if controller is None:
+            print("Cannot reassign pawn from network object with no controller")
+            return
+
+        new_pawn = replicable_cls(register_immediately=True)
+        controller.possess(new_pawn)
+
+        # Associate network object with this initialiser
+        self.initialisation_manager.associate_pawn_with_initialiser(original_id, new_pawn)
+
+        # Deregister old pawn
+        current_pawn.deregister()
 
     @ControllerPendingAssignmentSignal.on_global
     def on_connection(self, controller):
@@ -506,11 +565,14 @@ class ConnectionManager(SignalListener):
         self.request_assignment()
 
     @ControllerAssignedSignal.on_global
-    def on_assigned(self, replicable_name):
+    def on_assigned(self, replicable_name, initialiser_id):
         controller = self.pending_controllers.popleft()
         cls = Replicable.from_type_name(replicable_name)
         replicable = cls(register_immediately=True)
         controller.possess(replicable)
+
+        # Associate network object with this initialiser
+        self.initialisation_manager.associate_pawn_with_initialiser(initialiser_id,  replicable)
 
         # If still waiting, trigger controller
         if self.pending_controllers:
@@ -557,6 +619,10 @@ if WITH_BGE:
 
         def set(self, name, value):
             self._obj[name] = value
+
+        def receive_message(self, subject):
+            """Send message that won't be picked up as a broadcast"""
+            self._obj.sendMessage(subject, "", self._obj.name)
 
         @staticmethod
         def convert_message_logic(obj, instance_id):
@@ -633,8 +699,7 @@ if WITH_BGE:
 
         def on_notify(self, event_name):
             message_id = NOTIFICATION_PREFIX + dumps((event_name, self._entity.instance_id))
-            self._obj.sendMessage(message_id)
-            logic.sendMessage(message_id, "")
+            self.receive_message(message_id)
 
         def dispatch_rpc(self, event_name, data):
             arguments = self._rpc_args[event_name]
@@ -643,7 +708,7 @@ if WITH_BGE:
                 self._obj[name_] = value
 
             message_id = RPC_PREFIX + dumps((event_name, self._entity.instance_id))
-            self._obj.sendMessage(message_id, "", self._obj.name)
+            self.receive_message(message_id)
 
     def main():
         print("Networking enabled")
@@ -673,7 +738,8 @@ if WITH_BGE:
         input_manager = BGEInputManager()
 
         if WorldInfo.netmode == Netmodes.server:
-            connection_manager = ConnectionManager()
+            initialisation_manager = PawnInitialisationManager()
+            connection_manager = ControllerManager(initialisation_manager)
 
         signal_forwarder = SignalForwarder(signal_to_message)
         state_manager = StateManager()
