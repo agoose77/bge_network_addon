@@ -31,6 +31,9 @@ class Rules(ReplicationRulesBase):
         elif isinstance(replicable, ReplicationInfo):
             return True
 
+        elif replicable.always_relevant:
+            return True
+
 
 def init():
     rules = Rules()
