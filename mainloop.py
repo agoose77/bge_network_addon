@@ -30,13 +30,14 @@ else:
 
 
 CONTROLLER_ASSIGN_PREFIX = "CONTROLLER_ASSIGN_"
+CONTROLLER_REASSIGN_PREFIX = "CONTROLLER_REASSIGN_"
 CONTROLLER_REQUEST_MESSAGE = "CONTROLLER_REQUEST"
 
 RPC_PREFIX = "RPC_"
 NOTIFICATION_PREFIX = "NOTIFY_"
 TARGETED_SIGNAL_PREFIX = "SIGNAL_"
 GLOBAL_SIGNAL_PREFIX = "GLOBAL_SIGNAL_"
-UNIQUE_PREFIXES = RPC_PREFIX, NOTIFICATION_PREFIX, TARGETED_SIGNAL_PREFIX
+UNIQUE_PREFIXES = RPC_PREFIX, NOTIFICATION_PREFIX, TARGETED_SIGNAL_PREFIX, CONTROLLER_REASSIGN_PREFIX
 DATA_PATH = "network_data"
 
 DELIMITER = ","
@@ -123,7 +124,27 @@ class GameObjectInjector:
         return cls._default_load(definition)
 
 
-def find_controller_assignment(subjects):
+def get_prefixed_messages(subjects, prefix):
+    """Yield messages with prefix stripped"""
+    for subject in subjects:
+        if not subject.startswith(prefix):
+            continue
+
+        yield subject[len(prefix):]
+
+
+def get_bound_messages(subjects, prefix):
+    """Return dictionary of identifier to body for bound messages"""
+    messages = defaultdict(list)
+    for combined in get_prefixed_messages(subjects, prefix):
+        name, id_ = loads(combined)
+        messages[id_].append(name)
+
+    return messages
+
+
+def find_assigned_pawn_class(subjects):
+    """Return message for controller assignment"""
     for subject in subjects:
         if not subject.startswith(CONTROLLER_ASSIGN_PREFIX):
             continue
@@ -131,24 +152,11 @@ def find_controller_assignment(subjects):
         return subject[len(CONTROLLER_ASSIGN_PREFIX):]
 
 
-def determine_rpc_calls(subjects):
-    """Extract message subjects which belong to RPC calls
-
-    :param subjects: message subjects
-    """
-    messages = defaultdict(list)
-    for subject in subjects:
-        if not subject.startswith(RPC_PREFIX):
-            continue
-
-        combined = subject[len(RPC_PREFIX):]
-        name, id_ = loads(combined)
-        messages[id_].append(name)
- 
-    return messages
-
-
 def instantiate_actor_from_obj(obj):
+    """Instantiate network actor from gameobject
+
+    :param obj: KX_GameObject instance
+    """
     cls = classes[obj.name]
 
     GameObjectInjector.game_object = obj
@@ -157,12 +165,8 @@ def instantiate_actor_from_obj(obj):
     return cls(network_id, register_immediately=True)
 
 
-def no_op_func(*arsg, **kwargs):
+def no_op_func(*args, **kwargs):
     return None
-
-
-def raise_not_implemented(*args, **kwargs):
-    raise NotImplementedError("Physics isn't exposed in this build of Blender")
 
 
 def load_configuration(name):
@@ -213,7 +217,8 @@ def load_object_definitions(scene):
 
 
 def message_listener_rpc(subjects):
-    rpc_messages = determine_rpc_calls(subjects)
+    """Handle RPC messages"""
+    rpc_messages = get_bound_messages(subjects, RPC_PREFIX)
 
     for network_id, rpc_names in rpc_messages.items():
 
@@ -235,10 +240,35 @@ def message_listener_rpc(subjects):
 
 
 def message_listener_controller_assignment(subjects):
-    replicable_class_name = find_controller_assignment(subjects)
+    """Handle connection controller initial pawn assignment"""
+    replicable_class_name = find_assigned_pawn_class(subjects)
+
     if replicable_class_name is not None:
         ControllerAssignedSignal.invoke(replicable_class_name)
 
+
+def message_listener_controller_reassignment(subjects):
+    """Handle connection controller subsequent pawn assignment"""
+    reassignment_messages = get_bound_messages(subjects, CONTROLLER_REASSIGN_PREFIX)
+    for network_id, replicable_names in reassignment_messages.items():
+        replicable_name = next(replicable_names)
+        print("PLS")
+        try:
+            replicable_cls = Replicable.from_type_name(replicable_name)
+
+        except KeyError:
+            print("Controller pawn assignment requires valid object name, not {}".format(replicable_name))
+            continue
+
+        current_pawn = Replicable[network_id]
+        controller = current_pawn.uppermost
+
+        if controller is None:
+            print("Cannot reassign pawn from network object with no controller")
+            continue
+
+        new_pawn = replicable_cls(register_immediately=True)
+        controller.possess(new_pawn)
 
 message_subject_handlers = [message_listener_controller_assignment, message_listener_rpc]
 
@@ -322,31 +352,54 @@ class ReplicableFactory:
         argument_names = sorted(arguments)
 
         annotated_arguments = ["{}:TypeFlag({})".format(k, arguments[k].__name__) for k in argument_names]
-        args_declaration = ", {}".format(','.join(annotated_arguments)) if argument_names else ""
-        args_tuple = "({}{})".format(','.join(argument_names), ',' if argument_names else '')
+        argument_declarations = ", {}".format(','.join(annotated_arguments)) if argument_names else ""
+        arguments = "({}{})".format(','.join(argument_names), ',' if argument_names else '')
 
         is_reliable = data['reliable']
         is_simulated = data['simulated']
         return_target = data['target']
 
-        reliable_decorator = "@reliable\n" if is_reliable else ""
-        simulated_decorator = "@simulated\n" if is_simulated else ""
+        decorator_list = []
 
-        return """{reliable}{simulated}def {name}(self{args}) -> {returns}:\n\t"""\
-               """self.dispatch_rpc('{name}', {all_args})"""\
-            .format(reliable=reliable_decorator, simulated=simulated_decorator, name=name, args=args_declaration,
-                    returns=return_target, all_args=args_tuple)
+        if is_reliable:
+            decorator_list.append("@reliable")
+
+        if is_simulated:
+            decorator_list.append("@simulated")
+
+        decorators = '\n'.join(decorator_list)
+
+        func_body = \
+"""
+{decorators}
+def {name}(self{args}) -> {returns}:
+    self.dispatch_rpc('{name}', {all_args})
+"""
+        return func_body.format(decorators=decorators, name=name, args=argument_declarations, returns=return_target,
+                                all_args=arguments)
 
     @classmethod
     def create_property_synchronisation(cls, attributes):
         setter_lines = ["self.{name} = self.bge_addon.get('{name}')".format(name=name) for name in attributes]
         getter_lines = ["self.bge_addon.set('{name}', self.{name})".format(name=name) for name in attributes]
-        switch = "if self.roles.local == Roles.authority:\n\t\t" + "\n\t\t".join(setter_lines)
-        switch += "\n\telse:\n\t\t" + "\n\t\t".join(getter_lines)
 
-        return """@simulated\n@LogicUpdateSignal.on_global\ndef update(self, delta_time):"""\
-               """\n\t{}\n\tsuper().update(delta_time)"""\
-            .format(switch)
+        setter_line = "\n    ".join(setter_lines)
+        getter_line = "\n    ".join(getter_lines)
+
+        func_body = \
+"""
+@simulated
+@LogicUpdateSignal.on_global
+def update(self, delta_time):
+    if not self.bge_addon.alive:
+        return
+
+    if self.roles.local == Roles.authority:
+        {}
+    else:
+        {}"""
+
+        return func_body.format(setter_line, getter_line)
 
     @classmethod
     def create_conditions_string(cls, attributes):
@@ -495,6 +548,10 @@ if WITH_BGE:
 
             RegisterStateSignal.invoke(self.set_network_state)
 
+        @property
+        def alive(self):
+            return not self._obj.invalid
+
         def get(self, name):
             return self._obj[name]
 
@@ -541,8 +598,6 @@ if WITH_BGE:
             netmode = WorldInfo.netmode
             state = self._obj.state
             get_mask = self.get_state_mask
-
-            print(self._entity.roles, self._entity)
 
             for mask_netmode, netmode_states in states.items():
                 state &= ~get_mask(netmode_states)
