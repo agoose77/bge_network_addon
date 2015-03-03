@@ -669,7 +669,8 @@ if WITH_BGE:
                         timeout.on_target = quit_func
 
                 # Handle this outside of usual update
-                WorldInfo.update_clock(step_time)
+                if WorldInfo.netmode == Netmodes.server:
+                    WorldInfo.update_clock(step_time)
 
                 scene = logic.getCurrentScene()
 
@@ -685,6 +686,11 @@ if WITH_BGE:
                 state_manager.update()
 
                 bge.logic.NextFrame()
+
+                # Catch any deleted BGE objects from BGE
+                for actor in WorldInfo.subclass_of(SCA_Actor):
+                    if not actor.bge_addon.alive:
+                        actor.deregister(immediately=True)
 
                 # Update Timers
                 TimerUpdateSignal.invoke(step_time)
