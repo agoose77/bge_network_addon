@@ -58,15 +58,19 @@ NETWORK_ENUMS = get_bpy_enum(Netmodes)
 ROLES_ENUMS = get_bpy_enum(Roles)
 
 CONFIGURATION_FILE = "configuration.json"
+
 LISTENER_PATH = "interface.listener"
 DATA_PATH = "network_data"
 RULES_FILENAME = "rules.py"
 MAINLOOP_FILENAME = "mainloop.py"
 INTERFACE_FILENAME = "interface.py"
-REQUIRED_FILES = MAINLOOP_FILENAME, INTERFACE_FILENAME, RULES_FILENAME
+SIGNALS_FILENAME = "signals.py"
+ACTORS_FILENAME = "actors.py"
+REQUIRED_FILES = MAINLOOP_FILENAME, INTERFACE_FILENAME, RULES_FILENAME, SIGNALS_FILENAME, ACTORS_FILENAME
+
 DISPATCHER_NAME = "DISPATCHER"
-DEFAULT_TEMPLATE_MODULES = {"game_system.entities": [], "mainloop": ("SCA_Actor",)}
-DEFAULT_BASES = "SCA_Actor",
+DEFAULT_TEMPLATE_MODULES = {"game_system.entities": [], "actors": ("SCAActor",)}
+DEFAULT_BASES = "SCAActor",
 HIDDEN_BASES = "Actor",
 
 
@@ -805,20 +809,24 @@ def update_collection(source, destination, debug=0):
 update_handlers = []
 
 busy = False
+
+
 @bpy.app.handlers.persistent
 def on_update(scene):
     context = bpy.context
 
     global busy
     if busy:
+        print("Operaton already in progress")
         return
 
     busy = True
+    try:
+        for func in update_handlers:
+            func(context)
 
-    for func in update_handlers:
-        func(context)
-
-    busy = False
+    finally:
+        busy = False
 
 
 @bpy.app.handlers.persistent
@@ -926,6 +934,9 @@ def update_attributes(context):
 def update_network_logic(context):
     scene = context.scene
 
+    if not scene:
+        return
+
     if scene.use_network:
         if not scene.get("__main__") == INTERFACE_FILENAME:
             scene['__main__'] = INTERFACE_FILENAME
@@ -937,7 +948,7 @@ def update_network_logic(context):
         source_dir = path.dirname(__file__)
         source_path = path.join(source_dir, filename)
 
-        if not filename in bpy.data.texts:
+        if filename not in bpy.data.texts:
             text = bpy.data.texts.new(filename)
             with open(source_path, "r") as file:
                 text.from_string(file.read())
@@ -988,7 +999,6 @@ def update_templates(context):
 
     required_templates = []
     for name, value in getmembers(module):
-
         if name.startswith("_"):
             continue
 
@@ -1009,6 +1019,7 @@ def update_templates(context):
         # Store the default attribute values
         defaults = template.defaults
         ui_types = int, bool, str, float
+
         for name, value in getmembers(value):
             if name.startswith("_"):
                 continue
@@ -1035,12 +1046,22 @@ update_handlers.append(update_network_logic)
 update_handlers.append(update_templates)
 
 
+registered = False
+
+
 def register():
+    global registered
+
+    if registered:
+        return
+
     bpy.utils.register_module(__name__)
     bpy.app.handlers.scene_update_post.append(on_update)
     bpy.app.handlers.save_post.append(on_save)
     bpy.app.handlers.game_pre.append(on_save)
     bpy.app.handlers.game_pre.append(clean_modules)
+
+    registered = True
 
 
 def unregister():
@@ -1050,6 +1071,8 @@ def unregister():
     bpy.app.handlers.game_pre.remove(on_save)
     bpy.app.handlers.game_pre.remove(clean_modules)
 
-
     unloaded = clean_modules(None)
     print("Unloaded {}".format(unloaded))
+
+    global registered
+    registered = False
