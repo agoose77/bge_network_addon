@@ -817,15 +817,16 @@ def on_update(scene):
 
     global busy
     if busy:
-        print("busy")
+        print("Operaton already in progress")
         return
 
     busy = True
+    try:
+        for func in update_handlers:
+            func(context)
 
-    for func in update_handlers:
-        func(context)
-
-    busy = False
+    finally:
+        busy = False
 
 
 @bpy.app.handlers.persistent
@@ -1045,17 +1046,22 @@ update_handlers.append(update_network_logic)
 update_handlers.append(update_templates)
 
 
+registered = False
+
+
 def register():
-    try:
-        bpy.utils.register_module(__name__)
+    global registered
 
-    except Exception as err:
-        print(err)
+    if registered:
+        return
 
+    bpy.utils.register_module(__name__)
     bpy.app.handlers.scene_update_post.append(on_update)
     bpy.app.handlers.save_post.append(on_save)
     bpy.app.handlers.game_pre.append(on_save)
     bpy.app.handlers.game_pre.append(clean_modules)
+
+    registered = True
 
 
 def unregister():
@@ -1065,6 +1071,8 @@ def unregister():
     bpy.app.handlers.game_pre.remove(on_save)
     bpy.app.handlers.game_pre.remove(clean_modules)
 
-
     unloaded = clean_modules(None)
     print("Unloaded {}".format(unloaded))
+
+    global registered
+    registered = False

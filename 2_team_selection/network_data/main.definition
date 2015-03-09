@@ -1,1 +1,1 @@
-{"port": 1200, "netmode": "SERVER", "host": "", "metric_interval": 2.0, "tick_rate": 30}
+{"host": "", "metric_interval": 2.0, "port": 1200, "netmode": "SERVER", "tick_rate": 30}
