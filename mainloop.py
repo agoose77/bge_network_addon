@@ -99,9 +99,13 @@ def instantiate_actor_from_obj(obj):
     cls = classes[obj.name]
 
     GameObjectInjector.game_object = obj
-    # If we're static, this is not None
-    network_id = obj.get("network_id")
-    return cls(network_id, register_immediately=True)
+
+    if obj.name not in obj.scene.objectsInactive:
+        network_id = hash(obj.name) * (Replicable._MAXIMUM_REPLICABLES + 1)
+        return cls(network_id, register_immediately=True, static=True)
+
+    else:
+        return cls(register_immediately=True)
 
 
 def no_op_func(*args, **kwargs):
@@ -164,7 +168,8 @@ get_prefix_listener = lambda value: get_annotation("message_prefix")(value)
 
 message_subjects = dict(CONTROLLER_REQUEST="CONTROLLER_REQUEST")
 
-message_prefixes = dict(
+# Prefixes for messages associated with replicables
+message_prefixes_unique = dict(
     CONTROLLER_ASSIGN="CONTROLLER_ASSIGN_",
     CONTROLLER_REASSIGN="CONTROLLER_REASSIGN_",
     INITIALISER="ON_INIT_",
@@ -173,6 +178,8 @@ message_prefixes = dict(
     NOTIFICATION="NOTIFY_",
     TARGETED_SIGNAL="SIGNAL_",
     GLOBAL_SIGNAL="GLOBAL_SIGNAL_")
+
+message_prefixes_global = dict(SET_NETMODE="SET_NETMODE_")
 
 
 class MessageDispatcher:
@@ -191,18 +198,37 @@ class MessageDispatcher:
 
     def handle_messages(self, subjects):
         prefix_listeners = self.listeners
+        global_prefixes = set(message_prefixes_global.values())
 
         for subject in subjects:
             starts_with = subject.startswith
 
             for prefix, listeners in prefix_listeners.items():
                 if starts_with(prefix):
-                    unique_info = subject[len(prefix):]
-                    payload, recipient_id = loads(unique_info)
-                    for listener in listeners:
-                        listener(recipient_id, payload)
+                    following_prefix = subject[len(prefix):]
 
-    @prefix_listener(message_prefixes['RPC_INVOKE'])
+                    if prefix in global_prefixes:
+                        for listener in listeners:
+                            listener(following_prefix)
+
+                    else:
+                        payload, recipient_id = loads(following_prefix)
+                        for listener in listeners:
+                            listener(recipient_id, payload)
+
+    @prefix_listener(message_prefixes_global['SET_NETMODE'])
+    def message_listener_set_netmode(self, netmode_name):
+        try:
+            netmode = getattr(Netmodes, netmode_name)
+
+        except AttributeError:
+            print("Couldn't set netmode as {}".format(netmode_name))
+            return
+
+        NetmodeAssignedSignal.invoke(netmode)
+
+
+    @prefix_listener(message_prefixes_unique['RPC_INVOKE'])
     def message_listener_rpc(self, network_id, rpc_name):
         """Handle RPC messages"""
         try:
@@ -219,17 +245,17 @@ class MessageDispatcher:
 
         getattr(replicable, rpc_name)(*rpc_data)
 
-    @prefix_listener(message_prefixes['CONTROLLER_ASSIGN'])
+    @prefix_listener(message_prefixes_unique['CONTROLLER_ASSIGN'])
     def message_listener_controller_assignment(self, network_id, replicable_class_name):
         """Handle connection controller initial pawn assignment"""
         ControllerAssignedSignal.invoke(replicable_class_name, network_id)
 
-    @prefix_listener(message_prefixes['CONTROLLER_REASSIGN'])
+    @prefix_listener(message_prefixes_unique['CONTROLLER_REASSIGN'])
     def message_listener_controller_reassignment(self, network_id, replicable_class_name):
         """Handle connection controller subsequent pawn assignment"""
         ControllerReassignedSignal.invoke(replicable_class_name, network_id)
 
-    @prefix_listener(message_prefixes['INITIALISER'])
+    @prefix_listener(message_prefixes_unique['INITIALISER'])
     def message_listener_on_initialised(self, network_id, message_name):
         """Handle connection controller subsequent pawn assignment"""
         OnInitialisedMessageSignal.invoke(message_name, network_id)
@@ -255,7 +281,7 @@ class PawnInitialisationManager(SignalListener):
             return
 
         # Send ONLY to this object (avoid positive feedback)
-        pawn.bge_addon.receive_prefixed_message(message_prefixes['INITIALISER'], subject)
+        pawn.bge_addon.receive_prefixed_message(message_prefixes_unique['INITIALISER'], subject)
 
 
 def listener(cont):
@@ -283,12 +309,12 @@ def signal_to_message(*args, signal, target, **kwargs):
     signal_name = signal.__name__
 
     if isinstance(target, SCAActor):
-        modified_subject = MessageDispatcher.get_bound_prefix(message_prefixes['TARGETED_SIGNAL'], signal_name,
+        modified_subject = MessageDispatcher.get_bound_prefix(message_prefixes_unique['TARGETED_SIGNAL'], signal_name,
                                                               target.instance_id)
         logic.sendMessage(modified_subject)
 
     else:
-        subject = message_prefixes['GLOBAL_SIGNAL'] + signal_name
+        subject = message_prefixes_unique['GLOBAL_SIGNAL'] + signal_name
         logic.sendMessage(subject)
 
 
@@ -587,7 +613,7 @@ class BGESetupComponent(BGEComponent):
         for message_handler in sensors + actuators:
             message_subject = message_handler.subject
 
-            for prefix in message_prefixes.values():
+            for prefix in message_prefixes_unique.values():
                 if message_subject.startswith(prefix):
                     break
 
@@ -648,7 +674,7 @@ class BGESetupComponent(BGEComponent):
         self._obj.state = state
 
     def on_notify(self, event_name):
-        self.receive_prefixed_message(message_prefixes['NOTIFICATION'], event_name)
+        self.receive_prefixed_message(message_prefixes_unique['NOTIFICATION'], event_name)
 
     def dispatch_rpc(self, event_name, data):
         arguments = self._rpc_args[event_name]
@@ -656,42 +682,57 @@ class BGESetupComponent(BGEComponent):
         for name_, value in zip(arguments, data):
             self._obj[name_] = value
 
-        self.receive_prefixed_message(message_prefixes['RPC_INVOKE'], event_name)
+        self.receive_prefixed_message(message_prefixes_unique['RPC_INVOKE'], event_name)
 
 
 message_dispatcher = MessageDispatcher()
 
 
-class GameLoop(FixedTimeStepManager):
+class GameLoop(FixedTimeStepManager, SignalListener):
 
     def __init__(self):
         super().__init__()
 
         self.pending_exit = False
+        # Set default step function
+        self.on_step = self.step_default
 
+        print("Waiting for netmode assignment message")
+
+        self.register_signals()
+        update_graphs()
+
+    def enable_network(self, netmode):
         # Load configuration
         print("Loading network information from {}".format(DATA_PATH))
         file_path = logic.expandPath("//{}".format(DATA_PATH))
         main_definition_path = path.join(file_path, "main.definition")
 
-        self.configuration_file_names = {path.splitext(f)[0] for f in listdir(file_path)}
-
+        # Load network information
         with open(main_definition_path, "r") as file:
             data = load(file)
 
-        host = data['host']
-        port = data['port']
-
+        self.configuration_file_names = {path.splitext(f)[0] for f in listdir(file_path)}
         self.network_update_interval = 1 / data['tick_rate']
         self.metric_interval = data['metric_interval']
+        self.network_scene = next(s for s in logic.getSceneList() if s.name == data['scene'])
 
-        WorldInfo.netmode = BpyResolver.resolve_netmode(data['netmode'])
-        WorldInfo.tick_rate = logic.getLogicTicRate()
-
+        WorldInfo.netmode = netmode
         print("Running as a {}".format(Netmodes[WorldInfo.netmode]))
 
+        # If is server
+        if WorldInfo.netmode == Netmodes.server:
+            self.initialisation_manager = PawnInitialisationManager()
+            self.connection_manager = ControllerManager(self.initialisation_manager)
+
+            WorldInfo.tick_rate = logic.getLogicTicRate()
+            port = data['port']
+
+        else:
+            port = 0
+
         # Initialise systems
-        self.network = Network(host, port)
+        self.network = Network("", port)
         self.physics_manager = BGEPhysicsSystem(no_op_func, no_op_func)
         self.input_manager = BGEInputManager()
         self.signal_forwarder = SignalForwarder(signal_to_message)
@@ -700,11 +741,7 @@ class GameLoop(FixedTimeStepManager):
         # Time since last sent
         self.time_since_sent = 0.0
 
-        # If is server!
-        if WorldInfo.netmode == Netmodes.server:
-            self.initialisation_manager = PawnInitialisationManager()
-            self.connection_manager = ControllerManager(self.initialisation_manager)
-
+        # Load object definitions
         print("Loading definitions from scene objects")
         for scene in logic.getSceneList():
             load_object_definitions(scene)
@@ -712,7 +749,10 @@ class GameLoop(FixedTimeStepManager):
         # Update any subscriptions
         update_graphs()
 
-        print("Game started")
+        # Set network as active update function
+        self.on_step = self.step_network
+
+        print("Network started")
 
     @property
     def time_step(self):
@@ -739,15 +779,27 @@ class GameLoop(FixedTimeStepManager):
         if self.pending_exit:
             raise OnExitUpdate()
 
-    def on_step(self, delta_time):
+    @NetmodeAssignedSignal.on_global
+    def on_netmode_assigned(self, netmode):
+        """Callback when netmode has been assigned
+
+        :param netmode: netmode to assign
+        """
+        self.enable_network(netmode)
+
+    def step_default(self, delta_time):
+        logic.NextFrame()
+
         # Check if exit is required
         self.check_exit()
 
+    def step_network(self, delta_time):
         # Handle this outside of usual update
         if WorldInfo.netmode == Netmodes.server:
             WorldInfo.update_clock(delta_time)
 
-        scene = logic.getCurrentScene()
+        scene = self.network_scene
+        print(scene)
 
         # Initialise network objects if they're added
         configuration_file_names = self.configuration_file_names
@@ -756,6 +808,8 @@ class GameLoop(FixedTimeStepManager):
                 continue
 
             instantiate_actor_from_obj(obj)
+
+        update_graphs()
 
         self.network.receive()
         update_graphs()
@@ -799,6 +853,9 @@ class GameLoop(FixedTimeStepManager):
         network_metrics = self.network.metrics
         if network_metrics.sample_age >= self.metric_interval:
             network_metrics.reset_sample_window()
+
+        # Check if exit is required
+        self.check_exit()
 
 
 def main():

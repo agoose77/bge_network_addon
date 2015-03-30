@@ -31,6 +31,8 @@ bl_info = {
 
 import bpy
 import sys
+
+from contextlib import contextmanager
 from json import dump
 from os import path, makedirs, listdir
 from shutil import rmtree
@@ -72,6 +74,22 @@ DISPATCHER_NAME = "DISPATCHER"
 DEFAULT_TEMPLATE_MODULES = {"game_system.entities": [], "actors": ("SCAActor",)}
 DEFAULT_BASES = "SCAActor",
 HIDDEN_BASES = "Actor",
+
+
+busy_operations = set()
+active_network_scene = None
+
+
+@contextmanager
+def whilst_not_busy(identifier):
+    if identifier in busy_operations:
+        return
+
+    busy_operations.add(identifier)
+    try:
+        yield
+    finally:
+        busy_operations.remove(identifier)
 
 
 def state_changed(self, context):
@@ -269,23 +287,45 @@ class TemplateModule(bpy.types.PropertyGroup):
 bpy.utils.register_class(TemplateModule)
 
 
+@whilst_not_busy("disable_scenes")
+def disable_other_scenes_protected(scene, context):
+    global active_network_scene
+
+    if scene == active_network_scene:
+        active_network_scene = None
+
+    if not scene.use_network:
+        return
+
+    active_network_scene = scene
+
+    for scene in bpy.data.scenes:
+        if scene == scene:
+            continue
+
+        scene.use_network = False
+
+
+def disable_other_scenes(self, scene):
+    disable_other_scenes_protected(self, scene)
+
+
 class SystemPanel(bpy.types.Panel):
     bl_space_type = 'PROPERTIES'
     bl_region_type = 'WINDOW'
     bl_label = "Networking"
-    bl_context = "world"
+    bl_context = "scene"
 
     COMPAT_ENGINES = {'BLENDER_GAME'}
 
     @classmethod
     def register(cls):
-        bpy.types.Scene.network_mode = bpy.props.EnumProperty(name="Mode", items=NETWORK_ENUMS)
-        bpy.types.Scene.host = bpy.props.StringProperty(name="Socket Host", default="")
-        bpy.types.Scene.port = bpy.props.IntProperty(name="Socket Port")
+        bpy.types.Scene.port = bpy.props.IntProperty(name="Server Port")
         bpy.types.Scene.tick_rate = bpy.props.IntProperty(name="Tick Rate", default=30)
         bpy.types.Scene.metric_interval = bpy.props.FloatProperty(name="Metrics Sample Interval", default=2.0)
         bpy.types.Scene.use_network = bpy.props.BoolProperty(name="Use Networking", default=False,
-                                                             description="Enable networking for the game")
+                                                             description="Enable networking for the game",
+                                                             update=disable_other_scenes)
 
     def draw_header(self, context):
         self.layout.prop(context.scene, "use_network", text="")
@@ -296,10 +336,7 @@ class SystemPanel(bpy.types.Panel):
 
         layout.active = scene.use_network
 
-        layout.prop(scene, "network_mode", icon='CONSOLE')
-
-        if scene.network_mode == "SERVER":
-            layout.prop(scene, "port")
+        layout.prop(scene, "port")
 
         layout.prop(scene, "tick_rate")
         layout.prop(scene, "metric_interval")
@@ -447,8 +484,6 @@ class AttributesPanel(bpy.types.Panel):
 
         layout.template_list('RENDER_RT_AttributeList', "Properties", obj, "attributes", obj, "attribute_index", rows=3)
 
-        layout.active = scene.network_mode == 'SERVER'
-
 
 class TemplatesPanel(bpy.types.Panel):
     bl_space_type = "LOGIC_EDITOR"
@@ -576,10 +611,7 @@ class RENDER_RT_TemplateDefaultList(bpy.types.UIList):
 class RENDER_RT_RPCList(bpy.types.UIList):
 
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
-        network_mode = context.scene.network_mode
-
-        direction_icon = 'TRIA_RIGHT' if network_mode == item.target else 'TRIA_LEFT'
-        layout.prop(item, "name", icon=direction_icon, text="", emboss=False)
+        layout.prop(item, "name", text="", emboss=False)
 
         reliable_icon = 'LIBRARY_DATA_DIRECT' if item.reliable else 'LIBRARY_DATA_INDIRECT'
         layout.prop(item, "reliable", text="", icon=reliable_icon, emboss=False)
@@ -677,6 +709,7 @@ class LOGIC_OT_remove_template(bpy.types.Operator):
     def execute(self, context):
         obj = context.active_object
         active_template = get_active_item(obj.templates, obj.templates_index)
+
         if not active_template.name in DEFAULT_TEMPLATE_MODULES:
             obj.templates.remove(obj.templates_index)
 
@@ -808,38 +841,22 @@ def update_collection(source, destination, debug=0):
 
 update_handlers = []
 
-busy = False
 
-
+@whilst_not_busy("update")
 @bpy.app.handlers.persistent
 def on_update(scene):
     context = bpy.context
 
-    global busy
-    if busy:
-        print("Operaton already in progress")
-        return
-
-    busy = True
-    try:
-        for func in update_handlers:
-            func(context)
-
-    finally:
-        busy = False
+    for func in update_handlers:
+        func(context)
 
 
 @bpy.app.handlers.persistent
 def on_save(dummy):
     data_path = bpy.path.abspath("//{}".format(DATA_PATH))
 
-    scene = bpy.context.scene
-
-    if scene.network_mode == "CLIENT":
-        scene.port = 0
-
-    host = scene.host
-    port = scene.port
+    network_scene = active_network_scene
+    port = network_scene.port
 
     config = {}
 
@@ -886,11 +903,10 @@ def on_save(dummy):
             with open(configpath, "wb") as file:
                 configuration.write(file)
 
-    config['host'] = host
     config['port'] = port
-    config['tick_rate'] = scene.tick_rate
-    config['metric_interval'] = scene.metric_interval
-    config['netmode'] = scene.network_mode
+    config['tick_rate'] = network_scene.tick_rate
+    config['metric_interval'] = network_scene.metric_interval
+    config['scene'] = network_scene.name
 
     with open(path.join(data_path, "main.definition"), "w") as file:
         dump(config, file)
@@ -932,17 +948,17 @@ def update_attributes(context):
 
 
 def update_network_logic(context):
-    scene = context.scene
+    network_scene = active_network_scene
 
-    if not scene:
-        return
+    if network_scene is None:
+        for scene in bpy.data.scenes:
+            if '__main__' in scene:
+                del scene['__main__']
 
-    if scene.use_network:
-        if not scene.get("__main__") == INTERFACE_FILENAME:
-            scene['__main__'] = INTERFACE_FILENAME
-
-    elif '__main__' in scene:
-        del scene['__main__']
+    else:
+        for scene in bpy.data.scenes:
+            if not scene.get("__main__") == INTERFACE_FILENAME:
+                scene['__main__'] = INTERFACE_FILENAME
 
     for filename in REQUIRED_FILES:
         source_dir = path.dirname(__file__)
@@ -965,8 +981,11 @@ def clean_modules(dummy):
 
 
 def update_templates(context):
-    obj = context.object
-    if not obj:
+    try:
+        obj = context.object
+        assert obj
+
+    except (AttributeError, AssertionError):
         return
 
     for module_path in DEFAULT_TEMPLATE_MODULES:
@@ -1041,9 +1060,22 @@ def update_templates(context):
         template.required = template.active = True
 
 
+def update_use_network(context):
+    global active_network_scene
+
+    for scene in bpy.data.scenes:
+        if scene.use_network:
+            if active_network_scene is None:
+                active_network_scene = scene
+
+            elif scene != active_network_scene:
+                scene.use_network = False
+
+
 update_handlers.append(update_attributes)
 update_handlers.append(update_network_logic)
 update_handlers.append(update_templates)
+update_handlers.append(update_use_network)
 
 
 registered = False

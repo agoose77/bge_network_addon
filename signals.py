@@ -19,3 +19,7 @@ class OnInitialisedMessageSignal(Signal):
 
 class RegisterStateSignal(Signal):
     pass
+
+
+class NetmodeAssignedSignal(Signal):
+    pass
