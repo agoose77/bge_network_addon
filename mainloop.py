@@ -77,18 +77,26 @@ class GameObjectInjector:
     game_object = None
     _default_load = None
 
+    _find_or_create_object = BGEComponentLoader.find_or_create_object
+
     @classmethod
-    def load(cls, definition):
+    def find_or_create_object(cls, entity, definition):
         if cls.game_object is not None:
             _pending_obj, cls.game_object = cls.game_object, None
             return _pending_obj
 
-        return cls._default_load(definition)
+        return cls._find_or_create_object(entity, definition)
 
+
+BGEComponentLoader.find_or_create_object = GameObjectInjector.find_or_create_object
 ResourceManager.data_path = logic.expandPath("//{}".format(DATA_PATH))
 
-GameObjectInjector._default_load, BGEComponentLoader.create_object = (BGEComponentLoader.create_object,
-                                                                      GameObjectInjector.load)
+
+def string_to_wrapped_int(string, boundary):
+    value = 0
+    for char in string:
+        value = (value * 0x110000) + ord(char)
+    return value % boundary
 
 
 def instantiate_actor_from_obj(obj):
@@ -101,7 +109,8 @@ def instantiate_actor_from_obj(obj):
     GameObjectInjector.game_object = obj
 
     if obj.name not in obj.scene.objectsInactive:
-        network_id = hash(obj.name) * (Replicable._MAXIMUM_REPLICABLES + 1)
+        network_id = string_to_wrapped_int(obj.name, Replicable._MAXIMUM_REPLICABLES + 1)
+        print("Found static network object: {}, assigning ID: {}".format(obj.name, network_id))
         return cls(network_id, register_immediately=True, static=True)
 
     else:
@@ -662,12 +671,14 @@ class BGESetupComponent(BGEComponent):
                     state |= state_bit << i
 
         if not state:
-            all_states = {1 << i for i in range(30)}
+            all_states = (1 << i for i in range(30))
             used_states = {c.state for c in self._obj.controllers}
+
             try:
-                state = (all_states - used_states).pop()
+                state = next(c for c in all_states if not c in used_states)
                 state_index = int(log(state, 2)) + 1
                 print("{}: Using default state of {}".format(self._obj.name, state_index))
+
             except ValueError:
                 print("{}: Required a default empty state, none available".format(self._obj.name))
 
@@ -716,6 +727,7 @@ class GameLoop(FixedTimeStepManager, SignalListener):
         self.network_update_interval = 1 / data['tick_rate']
         self.metric_interval = data['metric_interval']
         self.network_scene = next(s for s in logic.getSceneList() if s.name == data['scene'])
+        BGEComponentLoader.scene = self.network_scene
 
         WorldInfo.netmode = netmode
         print("Running as a {}".format(Netmodes[WorldInfo.netmode]))
@@ -753,6 +765,9 @@ class GameLoop(FixedTimeStepManager, SignalListener):
         self.on_step = self.step_network
 
         print("Network started")
+
+    def cleanup(self):
+        self.network.stop()
 
     @property
     def time_step(self):
@@ -799,7 +814,6 @@ class GameLoop(FixedTimeStepManager, SignalListener):
             WorldInfo.update_clock(delta_time)
 
         scene = self.network_scene
-        print(scene)
 
         # Initialise network objects if they're added
         configuration_file_names = self.configuration_file_names
