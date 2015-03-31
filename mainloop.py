@@ -186,7 +186,9 @@ message_prefixes_unique = dict(
     RPC_INVOKE="RPC_",
     NOTIFICATION="NOTIFY_",
     TARGETED_SIGNAL="SIGNAL_",
-    GLOBAL_SIGNAL="GLOBAL_SIGNAL_")
+    GLOBAL_SIGNAL="GLOBAL_SIGNAL_",
+    METHOD_INVOKE="CALL_",
+    )
 
 message_prefixes_global = dict(SET_NETMODE="SET_NETMODE_")
 
@@ -236,6 +238,17 @@ class MessageDispatcher:
 
         NetmodeAssignedSignal.invoke(netmode)
 
+
+    @prefix_listener(message_prefixes_unique['METHOD_INVOKE'])
+    def message_listener_invoke_method(self, network_id, method_name):
+        """Handle RPC messages"""
+        try:
+            replicable = WorldInfo.get_replicable(network_id)
+
+        except LookupError:
+            return
+
+        getattr(replicable, method_name)(*rpc_data)
 
     @prefix_listener(message_prefixes_unique['RPC_INVOKE'])
     def message_listener_rpc(self, network_id, rpc_name):
@@ -400,8 +413,8 @@ def {name}(self{args}) -> {returns}:
 
     @classmethod
     def create_property_synchronisation(cls, attributes):
-        setter_lines = ["self.{name} = self.bge_addon.get('{name}')".format(name=name) for name in attributes]
-        getter_lines = ["self.bge_addon.set('{name}', self.{name})".format(name=name) for name in attributes]
+        setter_lines = ["self.{name} = self.bge_addon.get_property('{name}')".format(name=name) for name in attributes]
+        getter_lines = ["self.bge_addon.set_property('{name}', self.{name})".format(name=name) for name in attributes]
 
         setter_line = "\n    ".join(setter_lines)
         getter_line = "\n    ".join(getter_lines)
@@ -587,13 +600,17 @@ class BGESetupComponent(BGEComponent):
         RegisterStateSignal.invoke(self.set_network_state)
 
     @property
-    def alive(self):
+    def game_object(self):
+        return self._obj
+
+    @property
+    def is_alive(self):
         return not self._obj.invalid
 
-    def get(self, name):
+    def get_property(self, name):
         return self._obj[name]
 
-    def set(self, name, value):
+    def set_property(self, name, value):
         self._obj[name] = value
 
     def class_receive_message(self, subject):
@@ -836,7 +853,7 @@ class GameLoop(FixedTimeStepManager, SignalListener):
 
         # Catch any deleted BGE objects from BGE
         for actor in WorldInfo.subclass_of(SCAActor):
-            if not actor.bge_addon.alive:
+            if not actor.bge_addon.is_alive:
                 actor.deregister(immediately=True)
 
         # Update Timers

@@ -826,7 +826,7 @@ def update_item(source, destination, destination_data=None):
         destination[key] = value
 
 
-def update_collection(source, destination, debug=0):
+def update_collection(source, destination, condition=None):
     original = {}
 
     for prop in destination:
@@ -835,6 +835,9 @@ def update_collection(source, destination, debug=0):
     destination.clear()
 
     for prop in source:
+        if callable(condition) and not condition(prop):
+            continue
+
         attr = destination.add()
         update_item(prop, attr, original.get(prop.name))
 
@@ -915,7 +918,7 @@ def on_save(dummy):
 def prop_is_replicated(prop, attributes):
     prop_name = prop.name
 
-    if not prop_name in attributes:
+    if prop_name not in attributes:
         return False
 
     return attributes[prop_name].replicate
@@ -931,10 +934,10 @@ def update_attributes(context):
     obj = context.object
     attributes = obj.attributes
 
-    update_collection(obj.game.properties, attributes)
+    update_collection(obj.game.properties, attributes, lambda p: " " not in p.name)
+
     for rpc_call in obj.rpc_calls:
-        valid_props = [p for p in obj.game.properties if not prop_is_replicated(p, attributes)]
-        update_collection(valid_props, rpc_call.arguments,1)
+        update_collection(attributes, rpc_call.arguments, lambda p: not p.replicate)
 
     if not obj.states:
         server = obj.states.add()
