@@ -1024,10 +1024,10 @@ def update_templates(context):
         if name.startswith("_"):
             continue
 
-        if not isclass(value):
+        if not isclass(attribute_value):
             continue
 
-        if not issubclass(value, Replicable) or value is Replicable:
+        if not issubclass(attribute_value, Replicable) or attribute_value is Replicable:
             continue
 
         if name in HIDDEN_BASES:
@@ -1042,20 +1042,20 @@ def update_templates(context):
         defaults = template.defaults
         ui_types = int, bool, str, float
 
-        for name, value in getmembers(value):
-            if name.startswith("_"):
+        for attribute_name, attribute_value in getmembers(value):
+            if attribute_name.startswith("_"):
                 continue
 
-            value_type = type(value)
-            if not value_type in ui_types:
+            value_type = type(attribute_value)
+            if value_type not in ui_types:
                 continue
 
             default = defaults.add()
-            default.name = name
+            default.name = attribute_name
             default.type = type_to_enum_type(value_type)
 
             value_name = default.value_name
-            setattr(default, value_name, value)
+            setattr(default, value_name, attribute_value)
 
     template_module.loaded = True
 

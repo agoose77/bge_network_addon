@@ -248,7 +248,7 @@ class MessageDispatcher:
         except LookupError:
             return
 
-        getattr(replicable, method_name)(*rpc_data)
+        getattr(replicable, method_name)(replicable.bge_addon.game_object)
 
     @prefix_listener(message_prefixes_unique['RPC_INVOKE'])
     def message_listener_rpc(self, network_id, rpc_name):
