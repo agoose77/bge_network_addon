@@ -424,7 +424,7 @@ def {name}(self{args}) -> {returns}:
 @simulated
 @LogicUpdateSignal.on_global
 def update(self, delta_time):
-    if not self.bge_addon.alive:
+    if not self.bge_addon.is_alive:
         return
 
     if self.roles.local == Roles.authority:
