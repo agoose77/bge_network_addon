@@ -77,6 +77,7 @@ HIDDEN_BASES = "Actor",
 
 
 busy_operations = set()
+files_last_modified = {}
 active_network_scene = None
 
 
@@ -950,6 +951,39 @@ def update_attributes(context):
         client.states[0] = True
 
 
+def verify_text_files(check_modified=False):
+    for filename in REQUIRED_FILES:
+        source_dir = path.dirname(__file__)
+        source_path = path.join(source_dir, filename)
+
+        try:
+            text_block = bpy.data.texts[filename]
+
+        except KeyError:
+            text_block = bpy.data.texts.new(filename)
+
+            with open(source_path, "r") as file:
+                text_block.from_string(file.read())
+
+            print("Created text block for {} from disk".format(filename))
+
+        if check_modified:
+            os_last_modified = path.getmtime(source_path)
+            if files_last_modified.get(filename) == os_last_modified:
+                continue
+
+            with open(source_path, "r") as file:
+                text_block.from_string(file.read())
+
+            print("Updated {} with latest version from disk".format(filename))
+
+            files_last_modified[filename] = os_last_modified
+
+
+def update_text_files(context):
+    verify_text_files()
+
+
 def update_network_logic(context):
     network_scene = active_network_scene
 
@@ -962,15 +996,6 @@ def update_network_logic(context):
         for scene in bpy.data.scenes:
             if not scene.get("__main__") == INTERFACE_FILENAME:
                 scene['__main__'] = INTERFACE_FILENAME
-
-    for filename in REQUIRED_FILES:
-        source_dir = path.dirname(__file__)
-        source_path = path.join(source_dir, filename)
-
-        if filename not in bpy.data.texts:
-            text = bpy.data.texts.new(filename)
-            with open(source_path, "r") as file:
-                text.from_string(file.read())
 
 
 @bpy.app.handlers.persistent
@@ -1077,6 +1102,7 @@ def update_use_network(context):
 
 update_handlers.append(update_attributes)
 update_handlers.append(update_network_logic)
+update_handlers.append(update_text_files)
 update_handlers.append(update_templates)
 update_handlers.append(update_use_network)
 
@@ -1095,6 +1121,8 @@ def register():
     bpy.app.handlers.save_post.append(on_save)
     bpy.app.handlers.game_pre.append(on_save)
     bpy.app.handlers.game_pre.append(clean_modules)
+
+    verify_text_files(check_modified=True)
 
     registered = True
 
