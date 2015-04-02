@@ -780,11 +780,9 @@ class GameLoop(FixedTimeStepManager, SignalListener):
 
         # Set network as active update function
         self.on_step = self.step_network
+        self.cleanup = lambda: self.network.stop()
 
         print("Network started")
-
-    def cleanup(self):
-        self.network.stop()
 
     @property
     def time_step(self):

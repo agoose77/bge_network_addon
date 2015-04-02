@@ -984,6 +984,10 @@ def update_text_files(context):
     verify_text_files()
 
 
+def reload_text_files(context):
+    verify_text_files(check_modified=True)
+
+
 def update_network_logic(context):
     network_scene = active_network_scene
 
@@ -1117,10 +1121,12 @@ def register():
         return
 
     bpy.utils.register_module(__name__)
+
     bpy.app.handlers.scene_update_post.append(on_update)
     bpy.app.handlers.save_post.append(on_save)
     bpy.app.handlers.game_pre.append(on_save)
     bpy.app.handlers.game_pre.append(clean_modules)
+    bpy.app.handlers.game_pre.append(reload_text_files)
 
     verify_text_files(check_modified=True)
 
