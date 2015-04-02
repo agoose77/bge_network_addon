@@ -248,7 +248,7 @@ class MessageDispatcher:
         except LookupError:
             return
 
-        getattr(replicable, method_name)(replicable.bge_addon.game_object)
+        getattr(replicable, method_name)()
 
     @prefix_listener(message_prefixes_unique['RPC_INVOKE'])
     def message_listener_rpc(self, network_id, rpc_name):
@@ -422,7 +422,7 @@ def {name}(self{args}) -> {returns}:
         func_body = \
 """
 @simulated
-@LogicUpdateSignal.on_global
+@PropertySynchroniseSignal.on_global
 def update(self, delta_time):
     if not self.bge_addon.is_alive:
         return
@@ -865,6 +865,7 @@ class GameLoop(FixedTimeStepManager, SignalListener):
             update_graphs()
 
         # Update main logic (Replicable update)
+        PropertySynchroniseSignal.invoke(delta_time)
         LogicUpdateSignal.invoke(delta_time)
         update_graphs()
 

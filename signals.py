@@ -23,3 +23,7 @@ class RegisterStateSignal(Signal):
 
 class NetmodeAssignedSignal(Signal):
     pass
+
+
+class PropertySynchroniseSignal(Signal):
+    pass

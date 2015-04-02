@@ -1053,10 +1053,10 @@ def update_templates(context):
         if name.startswith("_"):
             continue
 
-        if not isclass(attribute_value):
+        if not isclass(value):
             continue
 
-        if not issubclass(attribute_value, Replicable) or attribute_value is Replicable:
+        if not issubclass(value, Replicable) or value is Replicable:
             continue
 
         if name in HIDDEN_BASES:
