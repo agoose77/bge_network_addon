@@ -406,7 +406,7 @@ class ReplicableFactory:
 """
 {decorators}
 def {name}(self{args}) -> {returns}:
-    self.dispatch_rpc('{name}', {all_args})
+    self.bge_addon.dispatch_rpc('{name}', {all_args})
 """
         return func_body.format(decorators=decorators, name=name, args=argument_declarations, returns=return_target,
                                 all_args=arguments)
