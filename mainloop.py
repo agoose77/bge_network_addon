@@ -303,7 +303,7 @@ class PawnInitialisationManager(SignalListener):
             return
 
         # Send ONLY to this object (avoid positive feedback)
-        pawn.bge_addon.receive_prefixed_message(message_prefixes_unique['INITIALISER'], subject)
+        pawn.bge_interface.receive_prefixed_message(message_prefixes_unique['INITIALISER'], subject)
 
 
 def listener(cont):
@@ -406,15 +406,15 @@ class ReplicableFactory:
 """
 {decorators}
 def {name}(self{args}) -> {returns}:
-    self.bge_addon.dispatch_rpc('{name}', {all_args})
+    self.bge_interface.dispatch_rpc('{name}', {all_args})
 """
         return func_body.format(decorators=decorators, name=name, args=argument_declarations, returns=return_target,
                                 all_args=arguments)
 
     @classmethod
     def create_property_synchronisation(cls, attributes):
-        setter_lines = ["self.{name} = self.bge_addon.get_property('{name}')".format(name=name) for name in attributes]
-        getter_lines = ["self.bge_addon.set_property('{name}', self.{name})".format(name=name) for name in attributes]
+        setter_lines = ["self.{name} = self.bge_interface.get_property('{name}')".format(name=name) for name in attributes]
+        getter_lines = ["self.bge_interface.set_property('{name}', self.{name})".format(name=name) for name in attributes]
 
         setter_line = "\n    ".join(setter_lines)
         getter_line = "\n    ".join(getter_lines)
@@ -424,7 +424,7 @@ def {name}(self{args}) -> {returns}:
 @simulated
 @PropertySynchroniseSignal.on_global
 def update(self, delta_time):
-    if not self.bge_addon.is_alive:
+    if not self.bge_interface.is_alive:
         return
 
     if self.roles.local == Roles.authority:
@@ -578,7 +578,7 @@ class ControllerManager(SignalListener):
             self.request_assignment()
 
 
-@with_tag("bge_addon")
+@with_tag("bge_interface")
 class BGESetupComponent(BGEComponent):
 
     def __init__(self, config_section, entity, obj):
@@ -860,7 +860,7 @@ class GameLoop(FixedTimeStepManager, SignalListener):
 
         # Catch any deleted BGE objects from BGE
         for actor in WorldInfo.subclass_of(SCAActor):
-            if not actor.bge_addon.is_alive:
+            if not actor.bge_interface.is_alive:
                 actor.deregister(immediately=True)
 
         # Update Timers
