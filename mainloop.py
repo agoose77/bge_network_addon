@@ -613,9 +613,18 @@ class BGESetupComponent(BGEComponent):
     def set_property(self, name, value):
         self._obj[name] = value
 
-    def class_receive_message(self, subject):
+    def _class_receive_no_broadcast(self, subject):
         """Send message that won't be picked up as a broadcast"""
         self._obj.sendMessage(subject, "", self._obj.name)
+
+    def send_message(self, subject, body="", target=""):
+        """Send message to game objects
+
+        :param subject: message subject
+        :param body: message body
+        :param target: name of objects to receive message
+        """
+        self._obj.sendMessage(subject, body, target)
 
     def receive_prefixed_message(self, prefix, subject):
         """Send message to a specific instance that won't be picked up as a broadcast
@@ -624,7 +633,7 @@ class BGESetupComponent(BGEComponent):
         :param subject: subject of message
         """
         modified_subject = MessageDispatcher.get_bound_prefix(prefix, subject, self._entity.instance_id)
-        self.class_receive_message(modified_subject)
+        self._class_receive_no_broadcast(modified_subject)
 
     @staticmethod
     def convert_message_logic(obj, instance_id):
