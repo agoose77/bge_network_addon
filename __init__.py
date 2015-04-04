@@ -21,11 +21,10 @@ bl_info = {
     "description": "Interfaces PyAuthServer for networking.",
     "author": "Angus Hollands",
     "version": (3, 0, 0),
-    "blender": (2, 71, 0),
-    "api": 56945,
+    "blender": (2, 74, 0),
     "location": "LOGIC_EDITOR > UI > NETWORKING",
     "warning": "",
-    "wiki_url": "",
+    "wiki_url": "https://github.com/agoose77/bge_network_addon/wiki",
     "tracker_url": "",
     "category": "Game Engine"}
 
