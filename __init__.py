@@ -54,6 +54,7 @@ def type_to_enum_type(type_):
     types = {int: "INT", float: "FLOAT", str: "STRING", bool: "BOOL"}
     return types[type_]
 
+
 TYPE_ENUMS = [(c, c, c) for i, c in enumerate(map(type_to_enum_type, (bool, int, float, str)))]
 NETWORK_ENUMS = get_bpy_enum(Netmodes)
 ROLES_ENUMS = get_bpy_enum(Roles)
@@ -1133,8 +1134,6 @@ def register():
     bpy.app.handlers.game_pre.append(on_save)
     bpy.app.handlers.game_pre.append(clean_modules)
     bpy.app.handlers.game_pre.append(reload_text_files)
-
-    verify_text_files(check_modified=True)
 
     registered = True
 
