@@ -441,7 +441,7 @@ class StatesPanel(bpy.types.Panel):
         self.draw_states_row(obj, 'simulated_states', box)
 
         column = box.column()
-        set_states = column.operator("network.set_states_from_visible", icon='FILE_REFRESH', text="")
+        set_states = column.operator("network.set_states_from_visible", icon='VISIBLE_IPO_ON', text="")
         set_states.set_simulated = True
 
         layout.label("Netmode States")
@@ -454,10 +454,10 @@ class StatesPanel(bpy.types.Panel):
 
         box = sub_layout.box()
         simulated_icon = lambda i: 'KEY_HLT' if obj.simulated_states[i] else 'BLANK1'
-        self.draw_states_row(active_state, 'states', box, icon_func = simulated_icon)
+        self.draw_states_row(active_state, 'states', box, icon_func=simulated_icon)
 
         column = box.column()
-        column.operator("network.set_states_from_visible", icon='FILE_REFRESH', text="")
+        column.operator("network.set_states_from_visible", icon='VISIBLE_IPO_ON', text="")
 
 
 # Add support for modifying inherited parameters?
@@ -556,11 +556,15 @@ class NetworkPanel(bpy.types.Panel):
                                                               description="Establish a network role for this object",
                                                               items=ROLES_ENUMS, default="SIMULATED_PROXY")
 
-    def draw(self, context):
-        layout = self.layout
+    def draw_header(self, context):
         obj = context.object
+        self.layout.prop(obj, "use_network", text="")
 
-        layout.prop(obj, "use_network", icon='AUTOMERGE_ON' if obj.use_network else 'AUTOMERGE_OFF')
+    def draw(self, context):
+        obj = context.object
+        layout = self.layout
+        layout.active = obj.use_network
+
         layout.prop(obj, "remote_role")
 
 
