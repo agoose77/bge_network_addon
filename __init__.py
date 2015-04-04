@@ -25,7 +25,7 @@ bl_info = {
     "location": "LOGIC_EDITOR > UI > NETWORKING",
     "warning": "",
     "wiki_url": "https://github.com/agoose77/bge_network_addon/wiki",
-    "tracker_url": "",
+    "tracker_url": "https://github.com/agoose77/bge_network_addon/issues",
     "category": "Game Engine"}
 
 import bpy
