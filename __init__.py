@@ -94,7 +94,7 @@ def whilst_not_busy(identifier):
 
 
 def state_changed(self, context):
-    bpy.ops.network.set_states_visible(index=context.object.states_index)
+    bpy.ops.network.show_states(index=context.object.states_index)
 
 
 def template_updated(self, context):
@@ -441,7 +441,7 @@ class StatesPanel(bpy.types.Panel):
         self.draw_states_row(obj, 'simulated_states', box)
 
         column = box.column()
-        set_states = column.operator("network.save_states", icon='FILE_REFRESH', text="")
+        set_states = column.operator("network.set_states_from_visible", icon='FILE_REFRESH', text="")
         set_states.set_simulated = True
 
         layout.label("Netmode States")
@@ -457,7 +457,7 @@ class StatesPanel(bpy.types.Panel):
         self.draw_states_row(active_state, 'states', box, icon_func = simulated_icon)
 
         column = box.column()
-        column.operator("network.save_states", icon='FILE_REFRESH', text="")
+        column.operator("network.set_states_from_visible", icon='FILE_REFRESH', text="")
 
 
 # Add support for modifying inherited parameters?
@@ -717,9 +717,9 @@ class LOGIC_OT_remove_template(bpy.types.Operator):
         return {'FINISHED'}
 
 
-class LOGIC_OT_save_states(bpy.types.Operator):
+class LOGIC_OT_set_states_from_visible(bpy.types.Operator):
     """Write currently visible states to mask for this netmode"""
-    bl_idname = "network.save_states"
+    bl_idname = "network.set_states_from_visible"
     bl_label = "Save logic states for this netmode"
 
     set_simulated = bpy.props.BoolProperty(default=False)
@@ -741,9 +741,9 @@ class LOGIC_OT_save_states(bpy.types.Operator):
         return {'FINISHED'}
 
 
-class LOGIC_OT_set_states_visible(bpy.types.Operator):
+class LOGIC_OT_show_states(bpy.types.Operator):
     """Read currently visible states from mask for this netmode"""
-    bl_idname = "network.set_states_visible"
+    bl_idname = "network.show_states"
     bl_label = "Set the states for this netmode visible"
 
     index = bpy.props.IntProperty()
