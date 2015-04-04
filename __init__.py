@@ -97,7 +97,7 @@ def state_changed(self, context):
     bpy.ops.network.show_states(index=context.object.states_index)
 
 
-def template_updated(self, context):
+def on_template_updated(self, context):
     obj = context.object
     if not obj:
         return
@@ -132,9 +132,9 @@ def template_updated(self, context):
         return
 
     for cls in mro:
-
         try:
             template = bases[cls]
+
         except KeyError:
             continue
 
@@ -266,7 +266,7 @@ class TemplateClass(bpy.types.PropertyGroup):
 
     name = bpy.props.StringProperty(name="Name", default="", description="Name of template")
     active = bpy.props.BoolProperty(name="Active", default=False, description="Use this template",
-                                    update=template_updated)
+                                    update=on_template_updated)
     required = bpy.props.BoolProperty(name="Default", default=False)
 
     defaults = bpy.props.CollectionProperty(name="Defaults", type=TemplateAttributeDefault)
@@ -535,6 +535,9 @@ class TemplatesPanel(bpy.types.Panel):
 
         layout.template_list('RENDER_RT_TemplateDefaultList', "TemplateItemDefaults", obj, "template_defaults",
                              obj, "templates_defaults_index", rows=3)
+
+        if not obj.template_defaults:
+            layout.label("Final class could not be built from selected template classes", icon='ERROR')
 
 
 class NetworkPanel(bpy.types.Panel):
