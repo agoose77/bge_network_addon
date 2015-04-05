@@ -81,6 +81,8 @@ HIDDEN_BASES = "Actor",
 busy_operations = set()
 files_last_modified = {}
 
+active_network_scene = None
+
 
 @contextmanager
 def whilst_not_busy(identifier):
