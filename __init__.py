@@ -20,7 +20,7 @@ bl_info = {
     "name": "PyAuthServer BGE Addon",
     "description": "Interfaces PyAuthServer for networking.",
     "author": "Angus Hollands",
-    "version": (3, 0, 1),
+    "version": (3, 0, 2),
     "blender": (2, 74, 0),
     "location": "LOGIC_EDITOR > UI > NETWORKING",
     "warning": "",
@@ -68,13 +68,15 @@ MAINLOOP_FILENAME = "mainloop.py"
 INTERFACE_FILENAME = "interface.py"
 SIGNALS_FILENAME = "signals.py"
 ACTORS_FILENAME = "actors.py"
+ASSETS_FILENAME = "assets.blend"
 REQUIRED_FILES = MAINLOOP_FILENAME, INTERFACE_FILENAME, RULES_FILENAME, SIGNALS_FILENAME, ACTORS_FILENAME
 
 DISPATCHER_NAME = "DISPATCHER"
+DISPATCHER_MARKER = "_DISPATCHER"
+
 DEFAULT_TEMPLATE_MODULES = {"game_system.entities": [], "actors": ("SCAActor",)}
 DEFAULT_BASES = "SCAActor",
 HIDDEN_BASES = "Actor",
-
 
 busy_operations = set()
 files_last_modified = {}
@@ -296,10 +298,15 @@ def on_scene_use_network_updated_protected(scene, context):
         active_network_scene = None
 
     if not scene.use_network:
+        # Remove dispatcher object
+        dispatcher = get_dispatcher(scene)
+        if dispatcher is not None:
+            print("UNLINK", dispatcher)
+            scene.objects.unlink(dispatcher)
+
         return
 
     active_network_scene = scene
-
     for scene in bpy.data.scenes:
         if scene == scene:
             continue
@@ -960,10 +967,14 @@ def on_save(dummy):
 
 
 @bpy.app.handlers.persistent
-def on_pre_game(scene):
+def on_game_pre(scene):
     context = bpy.context
     for func in pre_game_handlers:
         func(context)
+
+
+def get_addon_folder():
+    return path.dirname(__file__)
 
 
 def prop_is_replicated(prop, attributes):
@@ -1003,7 +1014,7 @@ def update_attributes(context):
 
 def verify_text_files(check_modified=False):
     for filename in REQUIRED_FILES:
-        source_dir = path.dirname(__file__)
+        source_dir = get_addon_folder()
         source_path = path.join(source_dir, filename)
 
         try:
@@ -1153,16 +1164,66 @@ def update_use_network(context):
                 scene.use_network = False
 
 
+def get_dispatcher(scene):
+    """Check if dispatcher exists in scene"""
+    try:
+        return scene.objects[DISPATCHER_NAME]
+
+    except KeyError:
+        # It might have been renamed
+        for obj in scene.objects:
+            if DISPATCHER_MARKER in obj:
+                return obj
+
+    return None
+
+
+def load_dispatcher(scene):
+    """Load dispatcher object from assets blend"""
+    addon_folder = get_addon_folder()
+    data_path = path.join(addon_folder, ASSETS_FILENAME)
+
+    # Load dispatcher
+    with bpy.data.libraries.load(data_path) as (data_from, data_to):
+        data_to.objects.append(DISPATCHER_NAME)
+
+    dispatcher = data_to.objects[0]
+    dispatcher[DISPATCHER_MARKER] = True
+
+    scene.objects.link(dispatcher)
+
+
+def check_dispatcher_exists(context):
+    network_scene = active_network_scene
+    if network_scene is None:
+        return
+
+    if get_dispatcher(network_scene) is not None:
+        return
+
+    print("Reloaded dispatcher from assets.blend")
+    load_dispatcher(network_scene)
+
+
+def set_network_global_var():
+    """Set global active_network_scene variable in registered"""
+    global active_network_scene
+    for scene in bpy.data.scenes:
+        if scene.use_network:
+            active_network_scene = scene
+            return
+
+
 update_handlers.append(update_attributes)
 update_handlers.append(update_network_logic)
 update_handlers.append(update_text_files)
 update_handlers.append(update_templates)
 update_handlers.append(update_use_network)
+update_handlers.append(check_dispatcher_exists)
 
 pre_game_handlers.append(on_save)
 pre_game_handlers.append(clean_modules)
 pre_game_handlers.append(reload_text_files)
-
 
 registered = False
 
@@ -1177,7 +1238,9 @@ def register():
 
     bpy.app.handlers.scene_update_post.append(on_update)
     bpy.app.handlers.save_post.append(on_save)
-    bpy.app.handlers.game_pre.append(on_pre_game)
+    bpy.app.handlers.game_pre.append(on_game_pre)
+
+    set_network_global_var()
 
     registered = True
 
