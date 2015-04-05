@@ -80,7 +80,6 @@ HIDDEN_BASES = "Actor",
 
 busy_operations = set()
 files_last_modified = {}
-active_network_scene = None
 
 
 @contextmanager
@@ -895,8 +894,9 @@ def update_collection(source, destination, condition=None):
         update_item(prop, attr, original.get(prop.name))
 
 
-update_handlers = []
+on_update_handlers = []
 pre_game_handlers = []
+on_load_handlers = []
 
 
 @whilst_not_busy("update")
@@ -904,7 +904,7 @@ pre_game_handlers = []
 def on_update(scene):
     context = bpy.context
 
-    for func in update_handlers:
+    for func in on_update_handlers:
         func(context)
 
 
@@ -964,6 +964,13 @@ def on_save(dummy):
 
     with open(path.join(data_path, "main.definition"), "w") as file:
         dump(config, file)
+
+
+@bpy.app.handlers.persistent
+def on_load(dummy):
+    context = bpy.context
+    for func in on_load_handlers:
+        func(context)
 
 
 @bpy.app.handlers.persistent
@@ -1205,7 +1212,7 @@ def check_dispatcher_exists(context):
     load_dispatcher(network_scene)
 
 
-def set_network_global_var():
+def set_network_global_var(context):
     """Set global active_network_scene variable in registered"""
     global active_network_scene
     for scene in bpy.data.scenes:
@@ -1214,16 +1221,19 @@ def set_network_global_var():
             return
 
 
-update_handlers.append(update_attributes)
-update_handlers.append(update_network_logic)
-update_handlers.append(update_text_files)
-update_handlers.append(update_templates)
-update_handlers.append(update_use_network)
-update_handlers.append(check_dispatcher_exists)
+on_update_handlers.append(update_attributes)
+on_update_handlers.append(update_network_logic)
+on_update_handlers.append(update_text_files)
+on_update_handlers.append(update_templates)
+on_update_handlers.append(update_use_network)
+on_update_handlers.append(check_dispatcher_exists)
 
 pre_game_handlers.append(on_save)
 pre_game_handlers.append(clean_modules)
 pre_game_handlers.append(reload_text_files)
+
+on_load_handlers.append(set_network_global_var)
+
 
 registered = False
 
@@ -1239,8 +1249,7 @@ def register():
     bpy.app.handlers.scene_update_post.append(on_update)
     bpy.app.handlers.save_post.append(on_save)
     bpy.app.handlers.game_pre.append(on_game_pre)
-
-    set_network_global_var()
+    bpy.app.handlers.load_post.append(on_load)
 
     registered = True
 
@@ -1249,8 +1258,8 @@ def unregister():
     bpy.utils.unregister_module(__name__)
     bpy.app.handlers.scene_update_post.remove(on_update)
     bpy.app.handlers.save_post.remove(on_save)
-    bpy.app.handlers.game_pre.remove(on_save)
-    bpy.app.handlers.game_pre.remove(clean_modules)
+    bpy.app.handlers.load_post.remove(on_load)
+    bpy.app.handlers.game_pre.remove(on_game_pre)
 
     unloaded = clean_modules(None)
     print("Unloaded {}".format(unloaded))
