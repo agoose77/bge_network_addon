@@ -643,6 +643,33 @@ class RENDER_RT_TemplateList(bpy.types.UIList):
             layout.prop(item, "active", text="")
 
 
+class LOGIC_OT_group_network_objects(bpy.types.Operator):
+    """Create group for network objects in scene"""
+    bl_idname = "network.add_to_group"
+    bl_label = "Add network objects to group"
+
+    group_name = bpy.props.StringProperty(default="NetworkObjects")
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self)
+
+    def execute(self, context):
+        group_name = self.group_name
+
+        try:
+            group = bpy.data.groups[group_name]
+
+        except KeyError:
+            group = bpy.data.groups.new(group_name)
+
+        for obj in context.scene.objects:
+            if obj.use_network:
+                try:
+                    group.objects.link(obj)
+                except RuntimeError:
+                    continue
+
+
 class LOGIC_OT_add_rpc(bpy.types.Operator):
     """Add a new RPC call"""
     bl_idname = "network.add_rpc_call"
