@@ -81,6 +81,7 @@ HIDDEN_BASES = "Actor",
 busy_operations = set()
 files_last_modified = {}
 
+
 active_network_scene = None
 
 
@@ -912,15 +913,15 @@ def on_update(scene):
 
 @bpy.app.handlers.persistent
 def on_save(dummy):
-    data_path = bpy.path.abspath("//{}".format(DATA_PATH))
-
     network_scene = active_network_scene
-    port = network_scene.port
+
+    if network_scene is None:
+        return
 
     config = {}
 
+    data_path = bpy.path.abspath("//{}".format(DATA_PATH))
     files = listdir(data_path)
-
     for obj in network_scene.objects:
         obj_name = obj.name
         obj_path = path.join(data_path, obj_name)
@@ -959,7 +960,7 @@ def on_save(dummy):
         with open(configpath, "wb") as file:
             configuration.write(file)
 
-    config['port'] = port
+    config['port'] = network_scene.port
     config['tick_rate'] = network_scene.tick_rate
     config['metric_interval'] = network_scene.metric_interval
     config['scene'] = network_scene.name
