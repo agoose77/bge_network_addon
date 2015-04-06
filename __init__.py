@@ -159,7 +159,6 @@ class AttributeGroup(bpy.types.PropertyGroup):
     name = bpy.props.StringProperty()
     type = bpy.props.StringProperty()
 
-    notify = bpy.props.BoolProperty(default=False, description="Whether attribute should trigger notifications")
     replicate = bpy.props.BoolProperty(default=False, description="Replicate this attribute")
 
     replicate_for_owner = bpy.props.BoolProperty(default=False, description="Replicate this attribute to the owner "
@@ -619,8 +618,7 @@ class RENDER_RT_AttributeList(bpy.types.UIList):
         row = layout.row(align=True)
 
         item_active = item.replicate
-
-        row.prop(item, "notify", text="", icon='INFO')
+)
         row.prop(item, "replicate_for_owner", text="", icon='LOOP_BACK')
         row.prop(item, "replicate_after_initial", text="", icon='DOTSUP')
         row.active = item_active
