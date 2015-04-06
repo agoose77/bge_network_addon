@@ -943,7 +943,7 @@ def on_save(dummy):
         data = dict()
 
         get_value = lambda n: obj.game.properties[n].value
-        data['attributes'] = {a.name: {'default': get_value(a.name), 'notify': a.notify,
+        data['attributes'] = {a.name: {'default': get_value(a.name),
                                        'initial_only': not a.replicate_after_initial,
                                        'ignore_owner': not a.replicate_for_owner}
                               for a in obj.attributes if a.replicate}

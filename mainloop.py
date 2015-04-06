@@ -413,14 +413,17 @@ def {name}(self{args}) -> {returns}:
 
     @classmethod
     def create_property_synchronisation(cls, attributes):
-        setter_lines = ["self.{name} = self.bge_interface.get_property('{name}')".format(name=name) for name in attributes]
-        getter_lines = ["self.bge_interface.set_property('{name}', self.{name})".format(name=name) for name in attributes]
-
-        setter_line = "\n        ".join(setter_lines)
-        getter_line = "\n        ".join(getter_lines)
-
+        names_str = "{}{}".format(','.join(["'{}'".format(x) for x in attributes]), ',' if attributes else '')
         func_body = \
 """
+properties = set(({}))
+
+def on_notify(self, name):
+    yield from super().on_notify(name)
+
+    if name in self.properties:
+        self.bge_interface.set_property(name, getattr(self, name))
+
 @simulated
 @PropertySynchroniseSignal.on_global
 def update(self, delta_time):
@@ -428,11 +431,11 @@ def update(self, delta_time):
         return
 
     if self.roles.local == Roles.authority:
-        {}
-    else:
-        {}"""
+        get_property = self.bge_interface.get_property
+        for attr_name in self.properties:
+            setattr(self, attr_name, get_property(attr_name))"""
 
-        return func_body.format(setter_line, getter_line)
+        return func_body.format(names_str)
 
     @classmethod
     def create_conditions_string(cls, attributes):
@@ -474,7 +477,7 @@ def update(self, delta_time):
         if not is_raw:
             default = safe_for_format(default)
 
-        return "{} = Attribute({}, notify={})".format(name, default, data['notify'])
+        return "{} = Attribute({}, notify=True)".format(name, default)
 
     @classmethod
     def parse_bases(cls, base_paths):
