@@ -75,7 +75,6 @@ DISPATCHER_NAME = "DISPATCHER"
 DISPATCHER_MARKER = "_DISPATCHER"
 
 DEFAULT_TEMPLATE_MODULES = {"game_system.entities": [], "actors": ("SCAActor",)}
-DEFAULT_BASES = "SCAActor",
 HIDDEN_BASES = "Actor",
 
 busy_operations = set()
@@ -1112,14 +1111,19 @@ def update_templates(context):
     try:
         module = __import__(template_path, fromlist=[''])
 
-    except ImportError:
+    except ImportError as err:
+        print("Failed to load {}: {}".format(template_path, err))
         return
+
+    else:
+        print("Loaded {}".format(template_path))
 
     templates = template_module.templates
     templates.clear()
 
     required_templates = []
     for name, value in getmembers(module):
+        print(name, value)
         if name.startswith("_"):
             continue
 
@@ -1132,8 +1136,11 @@ def update_templates(context):
         if name in HIDDEN_BASES:
             continue
 
+        print("Found class {}".format(name))
+
         template = templates.add()
         template.name = name
+
         if name in DEFAULT_TEMPLATE_MODULES.get(template_path, []):
             required_templates.append(template)
 
