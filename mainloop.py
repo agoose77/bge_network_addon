@@ -490,7 +490,7 @@ def update(self, delta_time):
                                  in attributes.items()]
         # Add remote role
         remote_role = configuration['remote_role']
-        roles_data = dict(default="Roles(Roles.authority, {})".format(remote_role), notify=False)
+        roles_data = dict(default="Roles(Roles.authority, {})".format(remote_role), notify=True)
         attribute_definitions.append(cls.create_attribute_string("roles", roles_data, is_raw=True))
 
         class_lines.extend(attribute_definitions)

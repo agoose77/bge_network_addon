@@ -20,13 +20,12 @@ bl_info = {
     "name": "PyAuthServer BGE Addon",
     "description": "Interfaces PyAuthServer for networking.",
     "author": "Angus Hollands",
-    "version": (3, 0, 0),
-    "blender": (2, 71, 0),
-    "api": 56945,
+    "version": (3, 0, 2),
+    "blender": (2, 74, 0),
     "location": "LOGIC_EDITOR > UI > NETWORKING",
     "warning": "",
-    "wiki_url": "",
-    "tracker_url": "",
+    "wiki_url": "https://github.com/agoose77/bge_network_addon/wiki",
+    "tracker_url": "https://github.com/agoose77/bge_network_addon/issues",
     "category": "Game Engine"}
 
 import bpy
@@ -55,6 +54,7 @@ def type_to_enum_type(type_):
     types = {int: "INT", float: "FLOAT", str: "STRING", bool: "BOOL"}
     return types[type_]
 
+
 TYPE_ENUMS = [(c, c, c) for i, c in enumerate(map(type_to_enum_type, (bool, int, float, str)))]
 NETWORK_ENUMS = get_bpy_enum(Netmodes)
 ROLES_ENUMS = get_bpy_enum(Roles)
@@ -68,16 +68,19 @@ MAINLOOP_FILENAME = "mainloop.py"
 INTERFACE_FILENAME = "interface.py"
 SIGNALS_FILENAME = "signals.py"
 ACTORS_FILENAME = "actors.py"
+ASSETS_FILENAME = "assets.blend"
 REQUIRED_FILES = MAINLOOP_FILENAME, INTERFACE_FILENAME, RULES_FILENAME, SIGNALS_FILENAME, ACTORS_FILENAME
 
 DISPATCHER_NAME = "DISPATCHER"
-DEFAULT_TEMPLATE_MODULES = {"game_system.entities": [], "actors": ("SCAActor",)}
-DEFAULT_BASES = "SCAActor",
-HIDDEN_BASES = "Actor",
+DISPATCHER_MARKER = "_DISPATCHER"
 
+DEFAULT_TEMPLATE_MODULES = {"game_system.entities": [], "actors": ("SCAActor",)}
+HIDDEN_BASES = "Actor",
 
 busy_operations = set()
 files_last_modified = {}
+
+
 active_network_scene = None
 
 
@@ -289,17 +292,22 @@ bpy.utils.register_class(TemplateModule)
 
 
 @whilst_not_busy("disable_scenes")
-def disable_other_scenes_protected(scene, context):
+def on_scene_use_network_updated_protected(scene, context):
     global active_network_scene
 
     if scene == active_network_scene:
         active_network_scene = None
 
     if not scene.use_network:
+        # Remove dispatcher object
+        dispatcher = get_dispatcher(scene)
+        if dispatcher is not None:
+            print("UNLINK", dispatcher)
+            scene.objects.unlink(dispatcher)
+
         return
 
     active_network_scene = scene
-
     for scene in bpy.data.scenes:
         if scene == scene:
             continue
@@ -307,8 +315,8 @@ def disable_other_scenes_protected(scene, context):
         scene.use_network = False
 
 
-def disable_other_scenes(self, scene):
-    disable_other_scenes_protected(self, scene)
+def on_scene_use_network_updated(self, scene):
+    on_scene_use_network_updated_protected(self, scene)
 
 
 class SystemPanel(bpy.types.Panel):
@@ -321,12 +329,15 @@ class SystemPanel(bpy.types.Panel):
 
     @classmethod
     def register(cls):
-        bpy.types.Scene.port = bpy.props.IntProperty(name="Server Port")
-        bpy.types.Scene.tick_rate = bpy.props.IntProperty(name="Tick Rate", default=30)
-        bpy.types.Scene.metric_interval = bpy.props.FloatProperty(name="Metrics Sample Interval", default=2.0)
+        bpy.types.Scene.port = bpy.props.IntProperty(name="Server Port", description="Port used to bind server")
+        bpy.types.Scene.tick_rate = bpy.props.IntProperty(name="Tick Rate", default=30,
+                                                          description="Number of network ticks per second")
+        bpy.types.Scene.metric_interval = bpy.props.FloatProperty(name="Metrics Sample Interval", default=2.0,
+                                                                  description="Time (in seconds) between successive "
+                                                                              "network metrics updates")
         bpy.types.Scene.use_network = bpy.props.BoolProperty(name="Use Networking", default=False,
-                                                             description="Enable networking for the game",
-                                                             update=disable_other_scenes)
+                                                             description="Set current scene as network scene",
+                                                             update=on_scene_use_network_updated)
 
     def draw_header(self, context):
         self.layout.prop(context.scene, "use_network", text="")
@@ -342,6 +353,14 @@ class SystemPanel(bpy.types.Panel):
         layout.prop(scene, "tick_rate")
         layout.prop(scene, "metric_interval")
 
+        layout.operator("network.add_to_group", icon='GROUP', text="Group Network Objects")
+
+
+def obj_panel_network_poll(cls, context):
+    obj = context.object
+    scene = context.scene
+    return obj is not None and obj.use_network and scene.use_network
+
 
 class RPCPanel(bpy.types.Panel):
     bl_space_type = "LOGIC_EDITOR"
@@ -350,9 +369,7 @@ class RPCPanel(bpy.types.Panel):
 
     COMPAT_ENGINES = {'BLENDER_GAME'}
 
-    @classmethod
-    def poll(cls, context):
-        return context.object is not None and context.object.use_network
+    poll = classmethod(obj_panel_network_poll)
 
     @classmethod
     def register(cls):
@@ -397,9 +414,7 @@ class StatesPanel(bpy.types.Panel):
 
     COMPAT_ENGINES = {'BLENDER_GAME'}
 
-    @classmethod
-    def poll(cls, context):
-        return context.object is not None and context.object.use_network
+    poll = classmethod(obj_panel_network_poll)
 
     @classmethod
     def register(cls):
@@ -468,9 +483,7 @@ class AttributesPanel(bpy.types.Panel):
 
     COMPAT_ENGINES = {'BLENDER_GAME'}
 
-    @classmethod
-    def poll(cls, context):
-        return context.object is not None and context.object.use_network
+    poll = classmethod(obj_panel_network_poll)
 
     @classmethod
     def register(cls):
@@ -493,9 +506,7 @@ class TemplatesPanel(bpy.types.Panel):
 
     COMPAT_ENGINES = {'BLENDER_GAME'}
 
-    @classmethod
-    def poll(cls, context):
-        return context.object is not None and context.object.use_network
+    poll = classmethod(obj_panel_network_poll)
 
     @classmethod
     def register(cls):
@@ -561,14 +572,20 @@ class NetworkPanel(bpy.types.Panel):
 
     def draw_header(self, context):
         obj = context.object
-        self.layout.prop(obj, "use_network", text="")
+
+        if context.scene.use_network:
+            self.layout.prop(obj, "use_network", text="")
 
     def draw(self, context):
         obj = context.object
         layout = self.layout
         layout.active = obj.use_network
 
-        layout.prop(obj, "remote_role")
+        if context.scene.use_network:
+            layout.prop(obj, "remote_role")
+
+        else:
+            self.layout.label("Networking Must Be Enabled For This Scene", icon='ERROR')
 
 
 class RENDER_RT_StateList(bpy.types.UIList):
@@ -641,6 +658,35 @@ class RENDER_RT_TemplateList(bpy.types.UIList):
 
         if not item.required:
             layout.prop(item, "active", text="")
+
+
+class LOGIC_OT_group_network_objects(bpy.types.Operator):
+    """Create group for network objects in scene"""
+    bl_idname = "network.add_to_group"
+    bl_label = "Group all network objects"
+
+    group_name = bpy.props.StringProperty(name="Group Name", default="NetworkObjects")
+
+    def invoke(self, context, event):
+        return context.window_manager.invoke_props_dialog(self)
+
+    def execute(self, context):
+        group_name = self.group_name
+
+        try:
+            group = bpy.data.groups[group_name]
+
+        except KeyError:
+            group = bpy.data.groups.new(group_name)
+
+        for obj in context.scene.objects:
+            if obj.use_network:
+                try:
+                    group.objects.link(obj)
+                except RuntimeError:
+                    continue
+
+        return {'FINISHED'}
 
 
 class LOGIC_OT_add_rpc(bpy.types.Operator):
@@ -850,7 +896,9 @@ def update_collection(source, destination, condition=None):
         update_item(prop, attr, original.get(prop.name))
 
 
-update_handlers = []
+on_update_handlers = []
+pre_game_handlers = []
+on_load_handlers = []
 
 
 @whilst_not_busy("update")
@@ -858,69 +906,84 @@ update_handlers = []
 def on_update(scene):
     context = bpy.context
 
-    for func in update_handlers:
+    for func in on_update_handlers:
         func(context)
 
 
 @bpy.app.handlers.persistent
 def on_save(dummy):
-    data_path = bpy.path.abspath("//{}".format(DATA_PATH))
-
     network_scene = active_network_scene
-    port = network_scene.port
+
+    if network_scene is None:
+        return
 
     config = {}
 
+    data_path = bpy.path.abspath("//{}".format(DATA_PATH))
     files = listdir(data_path)
+    for obj in network_scene.objects:
+        obj_name = obj.name
+        obj_path = path.join(data_path, obj_name)
 
-    for scene_ in bpy.data.scenes:
+        if not obj.use_network:
+            if obj_name in files:
+                rmtree(obj_path)
 
-        for obj in scene_.objects:
-            obj_name = obj.name
+            continue
 
-            obj_path = path.join(data_path, obj_name)
+        filepath = path.join(obj_path, "actor.definition")
 
-            if not obj.use_network:
-                if obj_name in files:
-                    rmtree(obj_path)
+        data = dict()
 
-                continue
+        get_value = lambda n: obj.game.properties[n].value
+        data['attributes'] = {a.name: {'default': get_value(a.name), 'notify': a.notify}
+                              for a in obj.attributes if a.replicate}
+        data['rpc_calls'] = {r.name: {'arguments': {a.name: a.type for a in r.arguments if a.replicate},
+                                      'target': r.target, 'reliable': r.reliable,
+                                      'simulated': r.simulated} for r in obj.rpc_calls}
 
-            filepath = path.join(obj_path, "actor.definition")
+        data['templates'] = ["{}.{}".format(g.name, t.name) for g in obj.templates for t in g.templates if t.active]
+        data['defaults'] = {d.name: getattr(d, d.value_name) for d in obj.template_defaults if d.modified}
+        data['states'] = {c.name: list(c.states) for c in obj.states}
+        data['simulated_states'] = list(obj.simulated_states)
+        data['remote_role'] = obj.remote_role
 
-            data = dict()
+        makedirs(path.dirname(filepath), exist_ok=True)
+        with open(filepath, "w") as file:
+            dump(data, file)
 
-            get_value = lambda n: obj.game.properties[n].value
-            data['attributes'] = {a.name: {'default': get_value(a.name), 'notify': a.notify}
-                                  for a in obj.attributes if a.replicate}
-            data['rpc_calls'] = {r.name: {'arguments': {a.name: a.type for a in r.arguments if a.replicate},
-                                          'target': r.target, 'reliable': r.reliable,
-                                          'simulated': r.simulated} for r in obj.rpc_calls}
+        configuration = ConfigObj()
+        configuration['BGE'] = {'object_name': obj.name}
 
-            data['templates'] = ["{}.{}".format(g.name, t.name) for g in obj.templates for t in g.templates if t.active]
-            data['defaults'] = {d.name: getattr(d, d.value_name) for d in obj.template_defaults if d.modified}
-            data['states'] = {c.name: list(c.states) for c in obj.states}
-            data['simulated_states'] = list(obj.simulated_states)
-            data['remote_role'] = obj.remote_role
+        configpath = path.join(data_path, "{}/definition.cfg".format(obj.name))
+        with open(configpath, "wb") as file:
+            configuration.write(file)
 
-            makedirs(path.dirname(filepath), exist_ok=True)
-            with open(filepath, "w") as file:
-                dump(data, file)
-
-            configuration = ConfigObj()
-            configuration['BGE'] = {'object_name': obj.name}
-
-            configpath = path.join(data_path, "{}/definition.cfg".format(obj.name))
-            with open(configpath, "wb") as file:
-                configuration.write(file)
-
-    config['port'] = port
+    config['port'] = network_scene.port
     config['tick_rate'] = network_scene.tick_rate
     config['metric_interval'] = network_scene.metric_interval
     config['scene'] = network_scene.name
 
     with open(path.join(data_path, "main.definition"), "w") as file:
         dump(config, file)
+
+
+@bpy.app.handlers.persistent
+def on_load(dummy):
+    context = bpy.context
+    for func in on_load_handlers:
+        func(context)
+
+
+@bpy.app.handlers.persistent
+def on_game_pre(scene):
+    context = bpy.context
+    for func in pre_game_handlers:
+        func(context)
+
+
+def get_addon_folder():
+    return path.dirname(__file__)
 
 
 def prop_is_replicated(prop, attributes):
@@ -960,7 +1023,7 @@ def update_attributes(context):
 
 def verify_text_files(check_modified=False):
     for filename in REQUIRED_FILES:
-        source_dir = path.dirname(__file__)
+        source_dir = get_addon_folder()
         source_path = path.join(source_dir, filename)
 
         try:
@@ -1009,8 +1072,7 @@ def update_network_logic(context):
                 scene['__main__'] = INTERFACE_FILENAME
 
 
-@bpy.app.handlers.persistent
-def clean_modules(dummy):
+def clean_modules(context):
     """Free any imported modules I.E Network to prevent state error"""
     unwanted_modules = set(sys.modules).difference(ORIGINAL_MODULES)
     for mod_name in unwanted_modules:
@@ -1049,14 +1111,19 @@ def update_templates(context):
     try:
         module = __import__(template_path, fromlist=[''])
 
-    except ImportError:
+    except ImportError as err:
+        print("Failed to load {}: {}".format(template_path, err))
         return
+
+    else:
+        print("Loaded {}".format(template_path))
 
     templates = template_module.templates
     templates.clear()
 
     required_templates = []
     for name, value in getmembers(module):
+        print(name, value)
         if name.startswith("_"):
             continue
 
@@ -1069,8 +1136,11 @@ def update_templates(context):
         if name in HIDDEN_BASES:
             continue
 
+        print("Found class {}".format(name))
+
         template = templates.add()
         template.name = name
+
         if name in DEFAULT_TEMPLATE_MODULES.get(template_path, []):
             required_templates.append(template)
 
@@ -1111,11 +1181,68 @@ def update_use_network(context):
                 scene.use_network = False
 
 
-update_handlers.append(update_attributes)
-update_handlers.append(update_network_logic)
-update_handlers.append(update_text_files)
-update_handlers.append(update_templates)
-update_handlers.append(update_use_network)
+def get_dispatcher(scene):
+    """Check if dispatcher exists in scene"""
+    try:
+        return scene.objects[DISPATCHER_NAME]
+
+    except KeyError:
+        # It might have been renamed
+        for obj in scene.objects:
+            if DISPATCHER_MARKER in obj:
+                return obj
+
+    return None
+
+
+def load_dispatcher(scene):
+    """Load dispatcher object from assets blend"""
+    addon_folder = get_addon_folder()
+    data_path = path.join(addon_folder, ASSETS_FILENAME)
+
+    # Load dispatcher
+    with bpy.data.libraries.load(data_path) as (data_from, data_to):
+        data_to.objects.append(DISPATCHER_NAME)
+
+    dispatcher = data_to.objects[0]
+    dispatcher[DISPATCHER_MARKER] = True
+
+    scene.objects.link(dispatcher)
+
+
+def check_dispatcher_exists(context):
+    network_scene = active_network_scene
+    if network_scene is None:
+        return
+
+    if get_dispatcher(network_scene) is not None:
+        return
+
+    print("Reloaded dispatcher from assets.blend")
+    load_dispatcher(network_scene)
+
+
+def set_network_global_var(context):
+    """Set global active_network_scene variable in registered"""
+    global active_network_scene
+    for scene in bpy.data.scenes:
+        if scene.use_network:
+            active_network_scene = scene
+            return
+
+
+on_update_handlers.append(update_attributes)
+on_update_handlers.append(update_network_logic)
+on_update_handlers.append(update_text_files)
+on_update_handlers.append(update_templates)
+on_update_handlers.append(update_use_network)
+on_update_handlers.append(check_dispatcher_exists)
+
+pre_game_handlers.append(on_save)
+pre_game_handlers.append(clean_modules)
+pre_game_handlers.append(reload_text_files)
+
+on_load_handlers.append(set_network_global_var)
 
 
 registered = False
@@ -1131,11 +1258,8 @@ def register():
 
     bpy.app.handlers.scene_update_post.append(on_update)
     bpy.app.handlers.save_post.append(on_save)
-    bpy.app.handlers.game_pre.append(on_save)
-    bpy.app.handlers.game_pre.append(clean_modules)
-    bpy.app.handlers.game_pre.append(reload_text_files)
-
-    verify_text_files(check_modified=True)
+    bpy.app.handlers.game_pre.append(on_game_pre)
+    bpy.app.handlers.load_post.append(on_load)
 
     registered = True
 
@@ -1144,8 +1268,8 @@ def unregister():
     bpy.utils.unregister_module(__name__)
     bpy.app.handlers.scene_update_post.remove(on_update)
     bpy.app.handlers.save_post.remove(on_save)
-    bpy.app.handlers.game_pre.remove(on_save)
-    bpy.app.handlers.game_pre.remove(clean_modules)
+    bpy.app.handlers.load_post.remove(on_load)
+    bpy.app.handlers.game_pre.remove(on_game_pre)
 
     unloaded = clean_modules(None)
     print("Unloaded {}".format(unloaded))
