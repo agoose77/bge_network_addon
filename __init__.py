@@ -162,6 +162,11 @@ class AttributeGroup(bpy.types.PropertyGroup):
     notify = bpy.props.BoolProperty(default=False, description="Whether attribute should trigger notifications")
     replicate = bpy.props.BoolProperty(default=False, description="Replicate this attribute")
 
+    replicate_for_owner = bpy.props.BoolProperty(default=False, description="Replicate this attribute to the owner "
+                                                                            "client")
+    replicate_after_initial = bpy.props.BoolProperty(default=True, description="Replicate this attribute after initial "
+                                                                               "replication")
+
 
 bpy.utils.register_class(AttributeGroup)
 
@@ -611,11 +616,13 @@ class RENDER_RT_AttributeList(bpy.types.UIList):
 
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
         layout.label(item.name, icon="NONE")
-        row = layout.row()
+        row = layout.row(align=True)
 
         item_active = item.replicate
 
         row.prop(item, "notify", text="", icon='INFO')
+        row.prop(item, "replicate_for_owner", text="", icon='LOOP_BACK')
+        row.prop(item, "replicate_after_initial", text="", icon='DOTSUP')
         row.active = item_active
 
         row = layout.row()
@@ -936,7 +943,8 @@ def on_save(dummy):
         data = dict()
 
         get_value = lambda n: obj.game.properties[n].value
-        data['attributes'] = {a.name: {'default': get_value(a.name), 'notify': a.notify}
+        data['attributes'] = {a.name: {'default': get_value(a.name), 'notify': a.notify,
+                                       'initial_only': not a.replicate_after_initial, 'to_owner': a.replicate_for_owner}
                               for a in obj.attributes if a.replicate}
         data['rpc_calls'] = {r.name: {'arguments': {a.name: a.type for a in r.arguments if a.replicate},
                                       'target': r.target, 'reliable': r.reliable,
