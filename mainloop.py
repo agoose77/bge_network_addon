@@ -447,7 +447,7 @@ def update(self, delta_time):
             if data['initial_only']:
                 conditions.append("is_initial")
 
-            if not data['to_owner']:
+            if data['ignore_owner']:
                 conditions.append("not is_owner")
 
             conditions_key = tuple(conditions)

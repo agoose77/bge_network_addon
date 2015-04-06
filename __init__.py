@@ -944,7 +944,8 @@ def on_save(dummy):
 
         get_value = lambda n: obj.game.properties[n].value
         data['attributes'] = {a.name: {'default': get_value(a.name), 'notify': a.notify,
-                                       'initial_only': not a.replicate_after_initial, 'to_owner': a.replicate_for_owner}
+                                       'initial_only': not a.replicate_after_initial,
+                                       'ignore_owner': not a.replicate_for_owner}
                               for a in obj.attributes if a.replicate}
         data['rpc_calls'] = {r.name: {'arguments': {a.name: a.type for a in r.arguments if a.replicate},
                                       'target': r.target, 'reliable': r.reliable,
