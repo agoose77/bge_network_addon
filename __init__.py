@@ -1004,6 +1004,13 @@ def prop_is_replicated(prop, attributes):
     return attributes[prop_name].replicate
 
 
+def prop_can_bundle(rpc_call, prop):
+    if prop.replicate:
+        return rpc_call.target == "SERVER" and not prop.replicate_for_owner
+
+    return True
+
+
 def update_attributes(context):
     if not hasattr(context, "object"):
         return
@@ -1017,7 +1024,7 @@ def update_attributes(context):
     update_collection(obj.game.properties, attributes, lambda p: " " not in p.name)
 
     for rpc_call in obj.rpc_calls:
-        update_collection(attributes, rpc_call.arguments, lambda p: not p.replicate)
+        update_collection(attributes, rpc_call.arguments, lambda prop: prop_can_bundle(rpc_call, prop))
 
     if not obj.states:
         server = obj.states.add()
