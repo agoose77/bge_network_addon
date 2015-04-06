@@ -440,7 +440,8 @@ def update(self, delta_time):
 
         :param attributes: sequence of names of attributes
         """
-        yield_statements = []
+        yield_by_conditions = defaultdict(list)
+
         for attr_name, data in attributes.items():
             conditions = []
             if data['initial_only']:
@@ -449,14 +450,21 @@ def update(self, delta_time):
             if not data['to_owner']:
                 conditions.append("not is_owner")
 
+            conditions_key = tuple(conditions)
+            yield_by_conditions[conditions_key].append(attr_name)
+
+        body_statements = []
+        for conditions, attr_names in yield_by_conditions.items():
             if conditions:
-                yield_statements.append("if {}:".format(" and ".join(conditions)))
-                yield_statements.append("    yield '{}'".format(attr_name))
+                body_statements.append("if {}:".format(" and ".join(conditions)))
+                for attr_name in attr_names:
+                    body_statements.append("    yield '{}'".format(attr_name))
 
             else:
-                yield_statements.append("yield '{}'".format(attr_name))
+                for attr_name in attr_names:
+                    body_statements.append("yield '{}'".format(attr_name))
 
-        yield_body = "\n    ".join(yield_statements)
+        yield_body = "\n    ".join(body_statements)
         return """def conditions(self, is_owner, is_complaint, is_initial):\n"""\
                """    yield from super().conditions(is_owner, is_complaint, is_initial)\n    {}""".format(yield_body)
 
