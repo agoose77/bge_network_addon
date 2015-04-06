@@ -416,8 +416,8 @@ def {name}(self{args}) -> {returns}:
         setter_lines = ["self.{name} = self.bge_interface.get_property('{name}')".format(name=name) for name in attributes]
         getter_lines = ["self.bge_interface.set_property('{name}', self.{name})".format(name=name) for name in attributes]
 
-        setter_line = "\n    ".join(setter_lines)
-        getter_line = "\n    ".join(getter_lines)
+        setter_line = "\n        ".join(setter_lines)
+        getter_line = "\n        ".join(getter_lines)
 
         func_body = \
 """
@@ -440,10 +440,33 @@ def update(self, delta_time):
 
         :param attributes: sequence of names of attributes
         """
-        yield_statements = ["yield '{}'".format(attr) for attr in attributes]
-        yield_body = "\n".join(yield_statements)
-        return """def conditions(self, is_owner, is_complaint, is_initial):\n\t"""\
-               """yield from super().conditions(is_owner, is_complaint, is_initial)\n\t{}""".format(yield_body)
+        yield_by_conditions = defaultdict(list)
+
+        for attr_name, data in attributes.items():
+            conditions = []
+            if data['initial_only']:
+                conditions.append("is_initial")
+
+            if data['ignore_owner']:
+                conditions.append("not is_owner")
+
+            conditions_key = tuple(conditions)
+            yield_by_conditions[conditions_key].append(attr_name)
+
+        body_statements = []
+        for conditions, attr_names in yield_by_conditions.items():
+            if conditions:
+                body_statements.append("if {}:".format(" and ".join(conditions)))
+                for attr_name in attr_names:
+                    body_statements.append("    yield '{}'".format(attr_name))
+
+            else:
+                for attr_name in attr_names:
+                    body_statements.append("yield '{}'".format(attr_name))
+
+        yield_body = "\n    ".join(body_statements)
+        return """def conditions(self, is_owner, is_complaint, is_initial):\n"""\
+               """    yield from super().conditions(is_owner, is_complaint, is_initial)\n    {}""".format(yield_body)
 
     @classmethod
     def create_attribute_string(cls, name, data, is_raw=False):
@@ -510,13 +533,12 @@ def update(self, delta_time):
         class_lines.extend(["{} = {}".format(name, "'" + value + "'" if isinstance(value, str) else value)
                             for name, value in default_values.items()])
 
-        class_body = "\n\t".join(class_lines)
-
+        class_body = "\n    ".join(class_lines)
         bases_string = ", ".join(base_namespaces.keys())
-        class_declaration = "class {}({}):\n\t".format(name, bases_string) + class_body
+        class_declaration = "class {}({}):\n    ".format(name, bases_string) + class_body
 
         exec(class_declaration, globals(), base_namespaces)
-
+        print(class_declaration)
         return base_namespaces[name]
 
 
