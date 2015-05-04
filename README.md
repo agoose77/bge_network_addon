@@ -6,4 +6,4 @@ The UI exposes RPC calls, Attribute replication, network class composition, netw
 
 
 # Install Guide
-[See the WIKI](/wiki/Installation-Guide)
+[See the WIKI](https://github.com/agoose77/bge_network_addon/wiki/Installation-Guide)
