@@ -109,7 +109,7 @@ def instantiate_actor_from_obj(obj):
     GameObjectInjector.game_object = obj
 
     if obj.name not in obj.scene.objectsInactive:
-        network_id = string_to_wrapped_int(obj.name, Replicable._MAXIMUM_REPLICABLES + 1)
+        network_id = string_to_wrapped_int(obj.name, Replicable.MAXIMUM_REPLICABLES + 1)
         print("Found static network object: {}, assigning ID: {}".format(obj.name, network_id))
         return cls(network_id, register_immediately=True, static=True)
 
