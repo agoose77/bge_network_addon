@@ -43,7 +43,7 @@ from game_system.configobj import ConfigObj
 from network.replicable import Replicable
 from network.enums import Roles, Netmodes
 
-from .version_checker import check_all_dependencies
+from .version_checker import RemoteVersionChecker
 
 
 def get_bpy_enum(enum):
@@ -84,7 +84,10 @@ files_last_modified = {}
 
 
 active_network_scene = None
+outdated_modules = []
 
+version_checker = RemoteVersionChecker()
+version_checker.start()
 
 @contextmanager
 def whilst_not_busy(identifier):
@@ -360,6 +363,9 @@ class SystemPanel(bpy.types.Panel):
         layout.prop(scene, "metric_interval")
 
         layout.operator("network.add_to_group", icon='GROUP', text="Group Network Objects")
+
+        for module in outdated_modules:
+            layout.label("{} is out of date!".format(module), icon='ERROR')
 
 
 def obj_panel_network_poll(cls, context):
@@ -1247,12 +1253,30 @@ def set_network_global_var(context):
             return
 
 
+def poll_version_checker(context):
+    """Check for any update results"""
+    for name, result in version_checker.results:
+        if not result:
+            outdated_modules.append(name)
+
+
+def send_update_requests():
+    remote_path = "https://raw.githubusercontent.com/agoose77/PyAuthServer/master/network/"
+    local_path = __import__("network").__path__[0]
+    version_checker.check_version("Network", remote_path, local_path, "version.txt")
+
+    remote_path = "https://raw.githubusercontent.com/agoose77/bge_network_addon/master/"
+    local_path = path.dirname(__file__)
+    version_checker.check_version("BGE Network Addon", remote_path, local_path, "version.txt")
+
+
 on_update_handlers.append(update_attributes)
 on_update_handlers.append(update_network_logic)
 on_update_handlers.append(update_text_files)
 on_update_handlers.append(update_templates)
 on_update_handlers.append(update_use_network)
 on_update_handlers.append(check_dispatcher_exists)
+on_update_handlers.append(poll_version_checker)
 
 pre_game_handlers.append(on_save)
 pre_game_handlers.append(clean_modules)
@@ -1271,7 +1295,7 @@ def register():
         return
 
     # Check updates
-    check_all_dependencies()
+    send_update_requests()
 
     bpy.utils.register_module(__name__)
 
