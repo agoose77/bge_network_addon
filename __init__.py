@@ -20,7 +20,7 @@ bl_info = {
     "name": "PyAuthServer BGE Addon",
     "description": "Interfaces PyAuthServer for networking.",
     "author": "Angus Hollands",
-    "version": (3, 0, 2),
+    "version": (1, 0, 1),
     "blender": (2, 74, 0),
     "location": "LOGIC_EDITOR > UI > NETWORKING",
     "warning": "",
