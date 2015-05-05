@@ -43,6 +43,8 @@ from game_system.configobj import ConfigObj
 from network.replicable import Replicable
 from network.enums import Roles, Netmodes
 
+from .version_checker import check_all_dependencies
+
 
 def get_bpy_enum(enum):
     enum_name = enum.__name__.rstrip("s").lower()
@@ -1267,6 +1269,9 @@ def register():
 
     if registered:
         return
+
+    # Check updates
+    check_all_dependencies()
 
     bpy.utils.register_module(__name__)
 

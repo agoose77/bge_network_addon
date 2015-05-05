@@ -1,1 +1,1 @@
-{"port": 1200, "metric_interval": 2.0, "tick_rate": 30, "scene": "main_scene"}
+{"tick_rate": 30, "metric_interval": 2.0, "port": 1200, "scene": "main_scene"}
