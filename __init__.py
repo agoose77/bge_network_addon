@@ -36,6 +36,7 @@ from json import dump
 from os import path, makedirs, listdir
 from shutil import rmtree
 from inspect import getmembers, isclass
+from logging import warning, info, exception
 
 ORIGINAL_MODULES = list(sys.modules)
 
@@ -82,12 +83,12 @@ HIDDEN_BASES = "Actor",
 busy_operations = set()
 files_last_modified = {}
 
-
 active_network_scene = None
 outdated_modules = []
 
 version_checker = RemoteVersionChecker()
 version_checker.start()
+
 
 @contextmanager
 def whilst_not_busy(identifier):
@@ -161,8 +162,8 @@ class AttributeGroup(bpy.types.PropertyGroup):
 
     """PropertyGroup for Actor attributes"""
 
-    name = bpy.props.StringProperty()
-    type = bpy.props.StringProperty()
+    name = bpy.props.StringProperty(description="Name of network attribute")
+    type = bpy.props.StringProperty(description="Data type of network attribute")
 
     replicate = bpy.props.BoolProperty(default=False, description="Replicate this attribute")
 
@@ -179,8 +180,8 @@ class RPCArgumentGroup(bpy.types.PropertyGroup):
 
     """PropertyGroup for RPC arguments"""
 
-    name = bpy.props.StringProperty()
-    type = bpy.props.StringProperty()
+    name = bpy.props.StringProperty(description="Name of RPC argument")
+    type = bpy.props.StringProperty(description="Data type of RPC argument")
 
     replicate = bpy.props.BoolProperty(default=False, description="Replicate this attribute")
 
@@ -192,10 +193,10 @@ class RPCGroup(bpy.types.PropertyGroup):
 
     """PropertyGroup for RPC calls"""
 
-    name = bpy.props.StringProperty(name="Name", default="Function", description="Name of RPC call")
-    reliable = bpy.props.BoolProperty(default=False, name="Reliable", description="Guarantee delivery of RPC call")
-    simulated = bpy.props.BoolProperty(default=False, name="Simulated", description="Allow execution for simulated proxy")
-    target = bpy.props.EnumProperty(items=NETWORK_ENUMS, name='Target', description="Netmode of RPC target")
+    name = bpy.props.StringProperty(default="Function", description="Name of RPC call")
+    reliable = bpy.props.BoolProperty(default=False, description="Guarantee delivery of RPC call")
+    simulated = bpy.props.BoolProperty(default=False, description="Allow execution for simulated proxies")
+    target = bpy.props.EnumProperty(items=NETWORK_ENUMS, description="Netmode of RPC target")
 
     arguments = bpy.props.CollectionProperty(type=RPCArgumentGroup)
     arguments_index = bpy.props.IntProperty()
@@ -208,8 +209,8 @@ class StateGroup(bpy.types.PropertyGroup):
 
     """PropertyGroup for RPC calls"""
 
-    name = bpy.props.StringProperty(name="Name", default="", description="Netmode of state group")
-    states = bpy.props.BoolVectorProperty(name="States", size=30)
+    name = bpy.props.StringProperty(description="Netmode to which these states belong")
+    states = bpy.props.BoolVectorProperty(size=30)
 
 
 bpy.utils.register_class(StateGroup)
@@ -228,8 +229,8 @@ class TemplateAttributeDefault(bpy.types.PropertyGroup):
     def get_items(self, context):
         return []
 
-    name = bpy.props.StringProperty(name="Name")
-    type = bpy.props.EnumProperty(name="Type", items=TYPE_ENUMS)
+    name = bpy.props.StringProperty(description="Name of template attribute default value")
+    type = bpy.props.EnumProperty(description="Data type of template attribute default value", items=TYPE_ENUMS)
 
     value_int = bpy.props.IntProperty()
     value_float = bpy.props.FloatProperty()
@@ -258,9 +259,10 @@ class ResolvedTemplateAttributeDefault(bpy.types.PropertyGroup):
     def get_items(self, context):
         return []
 
-    original_hash = bpy.props.StringProperty(name="Hash")
-    name = bpy.props.StringProperty(name="Name")
-    type = bpy.props.EnumProperty(name="Type", items=TYPE_ENUMS)
+    original_hash = bpy.props.StringProperty()
+    name = bpy.props.StringProperty(description="Name of resolved template attribute default value")
+    type = bpy.props.EnumProperty(description="Data type of resolved template attribute default value",
+                                  items=TYPE_ENUMS)
 
     value_int = bpy.props.IntProperty()
     value_float = bpy.props.FloatProperty()
@@ -273,27 +275,25 @@ bpy.utils.register_class(ResolvedTemplateAttributeDefault)
 
 
 class TemplateClass(bpy.types.PropertyGroup):
-
     """PropertyGroup for Template items"""
 
-    name = bpy.props.StringProperty(name="Name", default="", description="Name of template")
-    active = bpy.props.BoolProperty(name="Active", default=False, description="Use this template",
-                                    update=on_template_updated)
-    required = bpy.props.BoolProperty(name="Default", default=False)
+    name = bpy.props.StringProperty(description="Name of template class")
+    active = bpy.props.BoolProperty(description="Inherit this template class", update=on_template_updated)
+    required = bpy.props.BoolProperty(description="If this template class is required by default")
 
-    defaults = bpy.props.CollectionProperty(name="Defaults", type=TemplateAttributeDefault)
+    defaults = bpy.props.CollectionProperty(type=TemplateAttributeDefault)
     defaults_active = bpy.props.IntProperty()
+
 
 bpy.utils.register_class(TemplateClass)
 
 
 class TemplateModule(bpy.types.PropertyGroup):
-
     """PropertyGroup for Template collections"""
 
     name = bpy.props.StringProperty(name="Template Path", default="", description="Full path of template")
-    loaded = bpy.props.BoolProperty(name="Loaded", default=False, description="Flag to prevent reloading")
-    templates = bpy.props.CollectionProperty(name="Templates", type=TemplateClass)
+    loaded = bpy.props.BoolProperty(default=False, description="Flag to prevent reloading")
+    templates = bpy.props.CollectionProperty(type=TemplateClass)
     templates_active = bpy.props.IntProperty()
 
 
@@ -311,7 +311,7 @@ def on_scene_use_network_updated_protected(scene, context):
         # Remove dispatcher object
         dispatcher = get_dispatcher(scene)
         if dispatcher is not None:
-            print("UNLINK", dispatcher)
+            info("Unlinking dispatcher: {}".format(dispatcher))
             scene.objects.unlink(dispatcher)
 
         return
@@ -910,30 +910,47 @@ def update_collection(source, destination, condition=None):
 
 
 on_update_handlers = []
+on_save_handlers = []
 pre_game_handlers = []
 on_load_handlers = []
+
+
+def run_callbacks(handlers):
+    context = bpy.context
+    for callback in handlers:
+        callback(context)
 
 
 @whilst_not_busy("update")
 @bpy.app.handlers.persistent
 def on_update(scene):
-    context = bpy.context
-
-    for func in on_update_handlers:
-        func(context)
+    run_callbacks(on_update_handlers)
 
 
 @bpy.app.handlers.persistent
 def on_save(dummy):
-    network_scene = active_network_scene
+    run_callbacks(on_save_handlers)
 
+
+@bpy.app.handlers.persistent
+def on_load(dummy):
+    run_callbacks(on_load_handlers)
+
+
+@bpy.app.handlers.persistent
+def on_game_pre(scene):
+    run_callbacks(pre_game_handlers)
+
+
+def save_state(context):
+    network_scene = active_network_scene
     if network_scene is None:
         return
 
-    config = {}
-
     data_path = bpy.path.abspath("//{}".format(DATA_PATH))
     files = listdir(data_path)
+
+    config = {}
     for obj in network_scene.objects:
         obj_name = obj.name
         obj_path = path.join(data_path, obj_name)
@@ -948,16 +965,17 @@ def on_save(dummy):
 
         data = dict()
 
-        get_value = lambda n: obj.game.properties[n].value
-        data['attributes'] = {a.name: {'default': get_value(a.name),
+        get_property_value = lambda n: obj.game.properties[n].value
+        data['attributes'] = {a.name: {'default': get_property_value(a.name),
                                        'initial_only': not a.replicate_after_initial,
                                        'ignore_owner': not a.replicate_for_owner}
                               for a in obj.attributes if a.replicate}
+
         data['rpc_calls'] = {r.name: {'arguments': {a.name: a.type for a in r.arguments if a.replicate},
                                       'target': r.target, 'reliable': r.reliable,
                                       'simulated': r.simulated} for r in obj.rpc_calls}
 
-        data['templates'] = ["{}.{}".format(g.name, t.name) for g in obj.templates for t in g.templates if t.active]
+        data['templates'] = ["{}.{}".format(m.name, c.name) for m in obj.templates for c in m.templates if c.active]
         data['defaults'] = {d.name: getattr(d, d.value_name) for d in obj.template_defaults if d.modified}
         data['states'] = {c.name: list(c.states) for c in obj.states}
         data['simulated_states'] = list(obj.simulated_states)
@@ -970,8 +988,8 @@ def on_save(dummy):
         configuration = ConfigObj()
         configuration['BGE'] = {'object_name': obj.name}
 
-        configpath = path.join(data_path, "{}/definition.cfg".format(obj.name))
-        with open(configpath, "wb") as file:
+        configuration_filepath = path.join(data_path, "{}/definition.cfg".format(obj.name))
+        with open(configuration_filepath, "wb") as file:
             configuration.write(file)
 
     config['port'] = network_scene.port
@@ -983,34 +1001,12 @@ def on_save(dummy):
         dump(config, file)
 
 
-@bpy.app.handlers.persistent
-def on_load(dummy):
-    context = bpy.context
-    for func in on_load_handlers:
-        func(context)
-
-
-@bpy.app.handlers.persistent
-def on_game_pre(scene):
-    context = bpy.context
-    for func in pre_game_handlers:
-        func(context)
-
-
 def get_addon_folder():
+    """Return the folder of the network addon"""
     return path.dirname(__file__)
 
 
-def prop_is_replicated(prop, attributes):
-    prop_name = prop.name
-
-    if prop_name not in attributes:
-        return False
-
-    return attributes[prop_name].replicate
-
-
-def prop_can_bundle(rpc_call, prop):
+def property_allowed_as_argument(rpc_call, prop):
     if prop.replicate:
         return rpc_call.target == "SERVER" and not prop.replicate_for_owner
 
@@ -1030,7 +1026,7 @@ def update_attributes(context):
     update_collection(obj.game.properties, attributes, lambda p: " " not in p.name)
 
     for rpc_call in obj.rpc_calls:
-        update_collection(attributes, rpc_call.arguments, lambda prop: prop_can_bundle(rpc_call, prop))
+        update_collection(attributes, rpc_call.arguments, lambda prop: property_allowed_as_argument(rpc_call, prop))
 
     if not obj.states:
         server = obj.states.add()
@@ -1057,7 +1053,7 @@ def verify_text_files(check_modified=False):
             with open(source_path, "r") as file:
                 text_block.from_string(file.read())
 
-            print("Created text block for {} from disk".format(filename))
+            info("Created text block for {} from disk".format(filename))
 
         if check_modified:
             os_last_modified = path.getmtime(source_path)
@@ -1067,7 +1063,7 @@ def verify_text_files(check_modified=False):
             with open(source_path, "r") as file:
                 text_block.from_string(file.read())
 
-            print("Updated {} with latest version from disk".format(filename))
+            info("Updated {} with latest version from disk".format(filename))
 
             files_last_modified[filename] = os_last_modified
 
@@ -1134,18 +1130,17 @@ def update_templates(context):
         module = __import__(template_path, fromlist=[''])
 
     except ImportError as err:
-        print("Failed to load {}: {}".format(template_path, err))
+        exception("Failed to load {}: {}".format(template_path, err))
         return
 
     else:
-        print("Loaded {}".format(template_path))
+        info("Loaded {}".format(template_path))
 
     templates = template_module.templates
     templates.clear()
 
     required_templates = []
     for name, value in getmembers(module):
-        print(name, value)
         if name.startswith("_"):
             continue
 
@@ -1158,7 +1153,7 @@ def update_templates(context):
         if name in HIDDEN_BASES:
             continue
 
-        print("Found class {}".format(name))
+        info("Found class {}".format(name))
 
         template = templates.add()
         template.name = name
@@ -1240,7 +1235,7 @@ def check_dispatcher_exists(context):
     if get_dispatcher(network_scene) is not None:
         return
 
-    print("Reloaded dispatcher from assets.blend")
+    info("Reloaded dispatcher from assets.blend")
     load_dispatcher(network_scene)
 
 
@@ -1260,14 +1255,23 @@ def poll_version_checker(context):
             outdated_modules.append(name)
 
 
-def send_update_requests():
+def send_version_check_requests():
+    """Send version comparison request to worker thread"""
     remote_path = "https://raw.githubusercontent.com/agoose77/PyAuthServer/master/network/"
     local_path = __import__("network").__path__[0]
     version_checker.check_version("Network", remote_path, local_path, "version.txt")
 
     remote_path = "https://raw.githubusercontent.com/agoose77/bge_network_addon/master/"
-    local_path = path.dirname(__file__)
+    local_path = get_addon_folder()
     version_checker.check_version("BGE Network Addon", remote_path, local_path, "version.txt")
+
+
+def pre_game_save(context):
+    if not bpy.data.is_saved:
+        warning("This file has not been saved, network data will not be created")
+        return
+
+    save_state(context)
 
 
 on_update_handlers.append(update_attributes)
@@ -1295,7 +1299,7 @@ def register():
         return
 
     # Check updates
-    send_update_requests()
+    send_version_check_requests()
 
     bpy.utils.register_module(__name__)
 
@@ -1315,7 +1319,7 @@ def unregister():
     bpy.app.handlers.game_pre.remove(on_game_pre)
 
     unloaded = clean_modules(None)
-    print("Unloaded {}".format(unloaded))
+    info("Unloaded {}".format(unloaded))
 
     global registered
     registered = False
