@@ -948,20 +948,28 @@ def save_state(context):
         return
 
     data_path = bpy.path.abspath("//{}".format(DATA_PATH))
-    files = listdir(data_path)
+
+    try:
+        file_names = listdir(data_path)
+
+    except FileNotFoundError:
+        makedirs(data_path, exist_ok=True)
+        file_names = listdir(data_path)
 
     config = {}
+
     for obj in network_scene.objects:
         obj_name = obj.name
         obj_path = path.join(data_path, obj_name)
 
+        # Remove any previous network objects
         if not obj.use_network:
-            if obj_name in files:
+            if obj_name in file_names:
                 rmtree(obj_path)
 
             continue
 
-        filepath = path.join(obj_path, "actor.definition")
+        definition_filepath = path.join(obj_path, "actor.definition")
 
         data = dict()
 
@@ -981,8 +989,11 @@ def save_state(context):
         data['simulated_states'] = list(obj.simulated_states)
         data['remote_role'] = obj.remote_role
 
-        makedirs(path.dirname(filepath), exist_ok=True)
-        with open(filepath, "w") as file:
+        # Make sure we have directory for actor definition
+        definition_directory = path.dirname(definition_filepath)
+        makedirs(definition_directory, exist_ok=True)
+
+        with open(definition_filepath, "w") as file:
             dump(data, file)
 
         configuration = ConfigObj()
