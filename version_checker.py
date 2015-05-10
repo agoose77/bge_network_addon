@@ -52,5 +52,5 @@ class RemoteVersionChecker(Thread):
                 data = urlopen(address)
                 remote_version = version_to_tuple(data.read().decode())
 
-                result = (name, remote_version == local_version)
+                result = (name, remote_version <= local_version)
                 self._results.put(result, block=True)

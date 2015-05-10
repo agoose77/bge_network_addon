@@ -20,7 +20,7 @@ bl_info = {
     "name": "PyAuthServer BGE Addon",
     "description": "Interfaces PyAuthServer for networking.",
     "author": "Angus Hollands",
-    "version": (1, 1, 1),
+    "version": (1, 1, 2),
     "blender": (2, 74, 0),
     "location": "LOGIC_EDITOR > UI > NETWORKING",
     "warning": "",
@@ -29,278 +29,41 @@ bl_info = {
     "category": "Game Engine"}
 
 import bpy
-import sys
 
-from contextlib import contextmanager
+import sys
+ORIGINAL_MODULES = list(sys.modules)
+
 from json import dump
 from os import path, makedirs, listdir
 from shutil import rmtree
 from inspect import getmembers, isclass
 from logging import warning, info, exception
 
-ORIGINAL_MODULES = list(sys.modules)
-
 from game_system.configobj import ConfigObj
 from network.replicable import Replicable
-from network.enums import Roles, Netmodes
 
+# Submodules
+from .utilities import get_active_item, if_not_busy, update_collection
 from .version_checker import RemoteVersionChecker
+from .property_groups import *
+from .configuration import *
+from .operators import *
+from .renderers import *
 
-
-def get_bpy_enum(enum):
-    enum_name = enum.__name__.rstrip("s").lower()
-    return [(x.upper(), x.replace('_', ' ').title(), "{} {}".format(x.capitalize(), enum_name), i)
-            for i, x in enumerate(enum.values)]
-
-
-def type_to_enum_type(type_):
-    types = {int: "INT", float: "FLOAT", str: "STRING", bool: "BOOL"}
-    return types[type_]
-
-
-TYPE_ENUMS = [(c, c, c) for i, c in enumerate(map(type_to_enum_type, (bool, int, float, str)))]
-NETWORK_ENUMS = get_bpy_enum(Netmodes)
-ROLES_ENUMS = get_bpy_enum(Roles)
-
-CONFIGURATION_FILE = "configuration.json"
-
-LISTENER_PATH = "interface.listener"
-DATA_PATH = "network_data"
-RULES_FILENAME = "rules.py"
-MAINLOOP_FILENAME = "mainloop.py"
-INTERFACE_FILENAME = "interface.py"
-SIGNALS_FILENAME = "signals.py"
-ACTORS_FILENAME = "actors.py"
-ASSETS_FILENAME = "assets.blend"
-REQUIRED_FILES = MAINLOOP_FILENAME, INTERFACE_FILENAME, RULES_FILENAME, SIGNALS_FILENAME, ACTORS_FILENAME
-
-DISPATCHER_NAME = "DISPATCHER"
-DISPATCHER_MARKER = "_DISPATCHER"
-
-DEFAULT_TEMPLATE_MODULES = {"game_system.entities": [], "actors": ("SCAActor",)}
-HIDDEN_BASES = "Actor",
-
-busy_operations = set()
-files_last_modified = {}
 
 active_network_scene = None
 outdated_modules = []
+files_last_modified = {}
 
 version_checker = RemoteVersionChecker()
 version_checker.start()
-
-
-@contextmanager
-def whilst_not_busy(identifier):
-    if identifier in busy_operations:
-        return
-
-    busy_operations.add(identifier)
-    try:
-        yield
-    finally:
-        busy_operations.remove(identifier)
 
 
 def state_changed(self, context):
     bpy.ops.network.show_states(index=context.object.states_index)
 
 
-def on_template_updated(self, context):
-    obj = context.object
-    if not obj:
-        return
-
-    bases = {}
-    for template_module in obj.templates:
-        template_path = template_module.name
-
-        if not template_module.loaded:
-            continue
-
-        try:
-            module = __import__(template_path, fromlist=[''])
-
-        except ImportError:
-            return
-
-        templates = template_module.templates
-
-        for template in templates:
-            if template.active:
-                cls = getattr(module, template.name)
-                bases[cls] = template
-
-    obj_defaults = obj.template_defaults
-    obj_defaults.clear()
-
-    try:
-        mro = determine_mro(*bases.keys())
-
-    except TypeError:
-        return
-
-    for cls in mro:
-        try:
-            template = bases[cls]
-
-        except KeyError:
-            continue
-
-        for source in template.defaults:
-            attribute_name = source.name
-
-            if attribute_name in obj_defaults:
-                continue
-
-            destination = obj_defaults.add()
-            update_item(source, destination)
-            destination.original_hash = source.hash
-
-
-class AttributeGroup(bpy.types.PropertyGroup):
-
-    """PropertyGroup for Actor attributes"""
-
-    name = bpy.props.StringProperty(description="Name of network attribute")
-    type = bpy.props.StringProperty(description="Data type of network attribute")
-
-    replicate = bpy.props.BoolProperty(default=False, description="Replicate this attribute")
-
-    replicate_for_owner = bpy.props.BoolProperty(default=False, description="Replicate this attribute to the owner "
-                                                                            "client")
-    replicate_after_initial = bpy.props.BoolProperty(default=True, description="Replicate this attribute after initial "
-                                                                               "replication")
-
-
-bpy.utils.register_class(AttributeGroup)
-
-
-class RPCArgumentGroup(bpy.types.PropertyGroup):
-
-    """PropertyGroup for RPC arguments"""
-
-    name = bpy.props.StringProperty(description="Name of RPC argument")
-    type = bpy.props.StringProperty(description="Data type of RPC argument")
-
-    replicate = bpy.props.BoolProperty(default=False, description="Replicate this attribute")
-
-
-bpy.utils.register_class(RPCArgumentGroup)
-
-
-class RPCGroup(bpy.types.PropertyGroup):
-
-    """PropertyGroup for RPC calls"""
-
-    name = bpy.props.StringProperty(default="Function", description="Name of RPC call")
-    reliable = bpy.props.BoolProperty(default=False, description="Guarantee delivery of RPC call")
-    simulated = bpy.props.BoolProperty(default=False, description="Allow execution for simulated proxies")
-    target = bpy.props.EnumProperty(items=NETWORK_ENUMS, description="Netmode of RPC target")
-
-    arguments = bpy.props.CollectionProperty(type=RPCArgumentGroup)
-    arguments_index = bpy.props.IntProperty()
-
-
-bpy.utils.register_class(RPCGroup)
-
-
-class StateGroup(bpy.types.PropertyGroup):
-
-    """PropertyGroup for RPC calls"""
-
-    name = bpy.props.StringProperty(description="Netmode to which these states belong")
-    states = bpy.props.BoolVectorProperty(size=30)
-
-
-bpy.utils.register_class(StateGroup)
-
-
-class TemplateAttributeDefault(bpy.types.PropertyGroup):
-
-    @property
-    def hash(self):
-        return str(hash(getattr(self, self.value_name)))
-
-    @property
-    def value_name(self):
-        return "value_{}".format(self.type.lower())
-
-    def get_items(self, context):
-        return []
-
-    name = bpy.props.StringProperty(description="Name of template attribute default value")
-    type = bpy.props.EnumProperty(description="Data type of template attribute default value", items=TYPE_ENUMS)
-
-    value_int = bpy.props.IntProperty()
-    value_float = bpy.props.FloatProperty()
-    value_string = bpy.props.StringProperty()
-    value_bool = bpy.props.BoolProperty()
-    value_enum = bpy.props.EnumProperty(items=get_items)
-
-
-bpy.utils.register_class(TemplateAttributeDefault)
-
-
-class ResolvedTemplateAttributeDefault(bpy.types.PropertyGroup):
-
-    @property
-    def hash(self):
-        return str(hash(getattr(self, self.value_name)))
-
-    @property
-    def value_name(self):
-        return "value_{}".format(self.type.lower())
-
-    @property
-    def modified(self):
-        return self.hash != self.original_hash
-
-    def get_items(self, context):
-        return []
-
-    original_hash = bpy.props.StringProperty()
-    name = bpy.props.StringProperty(description="Name of resolved template attribute default value")
-    type = bpy.props.EnumProperty(description="Data type of resolved template attribute default value",
-                                  items=TYPE_ENUMS)
-
-    value_int = bpy.props.IntProperty()
-    value_float = bpy.props.FloatProperty()
-    value_string = bpy.props.StringProperty()
-    value_bool = bpy.props.BoolProperty()
-    value_enum = bpy.props.EnumProperty(items=get_items)
-
-
-bpy.utils.register_class(ResolvedTemplateAttributeDefault)
-
-
-class TemplateClass(bpy.types.PropertyGroup):
-    """PropertyGroup for Template items"""
-
-    name = bpy.props.StringProperty(description="Name of template class")
-    active = bpy.props.BoolProperty(description="Inherit this template class", update=on_template_updated)
-    required = bpy.props.BoolProperty(description="If this template class is required by default")
-
-    defaults = bpy.props.CollectionProperty(type=TemplateAttributeDefault)
-    defaults_active = bpy.props.IntProperty()
-
-
-bpy.utils.register_class(TemplateClass)
-
-
-class TemplateModule(bpy.types.PropertyGroup):
-    """PropertyGroup for Template collections"""
-
-    name = bpy.props.StringProperty(name="Template Path", default="", description="Full path of template")
-    loaded = bpy.props.BoolProperty(default=False, description="Flag to prevent reloading")
-    templates = bpy.props.CollectionProperty(type=TemplateClass)
-    templates_active = bpy.props.IntProperty()
-
-
-bpy.utils.register_class(TemplateModule)
-
-
-@whilst_not_busy("disable_scenes")
+@if_not_busy("disable_scenes")
 def on_scene_use_network_updated_protected(scene, context):
     global active_network_scene
 
@@ -362,10 +125,7 @@ class SystemPanel(bpy.types.Panel):
         layout.prop(scene, "tick_rate")
         layout.prop(scene, "metric_interval")
 
-        layout.operator("network.add_to_group", icon='GROUP', text="Group Network Objects")
-
-        for module in outdated_modules:
-            layout.label("{} is out of date!".format(module), icon='ERROR')
+        layout.operator("network.select_all", icon='GROUP', text="Select Only Network Objects")
 
 
 def obj_panel_network_poll(cls, context):
@@ -600,315 +360,6 @@ class NetworkPanel(bpy.types.Panel):
             self.layout.label("Networking Must Be Enabled For This Scene", icon='ERROR')
 
 
-class RENDER_RT_StateList(bpy.types.UIList):
-
-    def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
-        layout.label(item.name, icon="NONE")
-
-
-class RENDER_RT_RPCArgumentList(bpy.types.UIList):
-
-    def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
-        sub_layout = layout.split(0.8, True)
-        sub_layout.label(item.name, icon="NONE")
-
-        item_active = item.replicate
-
-        row = layout.row()
-        attr_icon = 'CHECKBOX_HLT' if item_active else 'CHECKBOX_DEHLT'
-        row.prop(item, "replicate", text="", icon=attr_icon, emboss=False)
-
-
-class RENDER_RT_AttributeList(bpy.types.UIList):
-
-    def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
-        layout.label(item.name, icon="NONE")
-        row = layout.row(align=True)
-
-        item_active = item.replicate
-
-        row.prop(item, "replicate_for_owner", text="", icon='LOOP_BACK')
-        row.prop(item, "replicate_after_initial", text="", icon='DOTSUP')
-        row.active = item_active
-
-        row = layout.row()
-        attr_icon = 'MUTE_IPO_OFF' if item_active else 'MUTE_IPO_ON'
-        row.prop(item, "replicate", text="", icon=attr_icon, emboss=False)
-
-
-class RENDER_RT_TemplateDefaultList(bpy.types.UIList):
-
-    def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
-        item_name = item.name.replace("_", " ").title()
-        layout.label(item_name, icon="NONE")
-        row = layout.row(align=True)
-        value_name = item.value_name
-        row.prop(item, value_name, text="")
-
-
-class RENDER_RT_RPCList(bpy.types.UIList):
-
-    def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
-        layout.prop(item, "name", text="", emboss=False)
-
-        reliable_icon = 'LIBRARY_DATA_DIRECT' if item.reliable else 'LIBRARY_DATA_INDIRECT'
-        layout.prop(item, "reliable", text="", icon=reliable_icon, emboss=False)
-
-        simulated_icon = 'SOLO_ON' if item.simulated else 'SOLO_OFF'
-        layout.prop(item, "simulated", text="", icon=simulated_icon, emboss=False)
-
-
-class RENDER_RT_TemplateGroupList(bpy.types.UIList):
-
-    def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
-        layout.label(icon='FILE_SCRIPT', text=item.name)
-
-
-class RENDER_RT_TemplateList(bpy.types.UIList):
-
-    def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
-        layout.label(icon='SCRIPTPLUGINS', text=item.name)
-
-        if not item.required:
-            layout.prop(item, "active", text="")
-
-
-class LOGIC_OT_group_network_objects(bpy.types.Operator):
-    """Create group for network objects in scene"""
-    bl_idname = "network.add_to_group"
-    bl_label = "Group all network objects"
-
-    group_name = bpy.props.StringProperty(name="Group Name", default="NetworkObjects")
-
-    def invoke(self, context, event):
-        return context.window_manager.invoke_props_dialog(self)
-
-    def execute(self, context):
-        group_name = self.group_name
-
-        try:
-            group = bpy.data.groups[group_name]
-
-        except KeyError:
-            group = bpy.data.groups.new(group_name)
-
-        for obj in context.scene.objects:
-            if obj.use_network:
-                try:
-                    group.objects.link(obj)
-                except RuntimeError:
-                    continue
-
-        return {'FINISHED'}
-
-
-class LOGIC_OT_add_rpc(bpy.types.Operator):
-    """Add a new RPC call"""
-    bl_idname = "network.add_rpc_call"
-    bl_label = "Add RPC call"
-
-    @classmethod
-    def poll(cls, context):
-        return context.active_object is not None
-
-    def execute(self, context):
-        obj = context.active_object
-        obj.rpc_calls.add()
-
-        return {'FINISHED'}
-
-
-class LOGIC_OT_remove_rpc(bpy.types.Operator):
-    """Delete selected RPC call"""
-    bl_idname = "network.remove_rpc_call"
-    bl_label = "Remove RPC call"
-
-    @classmethod
-    def poll(cls, context):
-        return context.active_object is not None
-
-    def execute(self, context):
-        obj = context.active_object
-        obj.rpc_calls.remove(obj.rpc_calls_index)
-
-        return {'FINISHED'}
-
-
-class LOGIC_OT_add_template(bpy.types.Operator):
-    """Load templates from a module"""
-    bl_idname = "network.add_template"
-    bl_label = "Add template"
-
-    path = bpy.props.StringProperty(name="Path", description="Path to templates")
-
-    @classmethod
-    def poll(cls, context):
-        return context.active_object is not None
-
-    def invoke(self, context, event):
-        return context.window_manager.invoke_props_dialog(self)
-
-    def execute(self, context):
-        obj = context.active_object
-        name = self.path
-
-        try:
-            __import__(name, fromlist=[''])
-
-        except (ValueError, ImportError):
-            return {'CANCELLED'}
-
-        template = obj.templates.add()
-        template.name = name
-
-        return {'FINISHED'}
-
-
-class LOGIC_OT_remove_template(bpy.types.Operator):
-    """Unload templates from a module"""
-    bl_idname = "network.remove_template"
-    bl_label = "Remove template"
-
-    @classmethod
-    def poll(cls, context):
-        return context.active_object is not None
-
-    def execute(self, context):
-        obj = context.active_object
-        active_template = get_active_item(obj.templates, obj.templates_index)
-
-        if not active_template.name in DEFAULT_TEMPLATE_MODULES:
-            obj.templates.remove(obj.templates_index)
-
-        return {'FINISHED'}
-
-
-class LOGIC_OT_set_states_from_visible(bpy.types.Operator):
-    """Write currently visible states to mask for this netmode"""
-    bl_idname = "network.set_states_from_visible"
-    bl_label = "Save logic states for this netmode"
-
-    set_simulated = bpy.props.BoolProperty(default=False)
-
-    @classmethod
-    def poll(cls, context):
-        return context.active_object is not None
-
-    def execute(self, context):
-        obj = context.active_object
-        if self.set_simulated:
-            states = obj.simulated_states
-
-        else:
-            states = obj.states[obj.states_index].states
-
-        states[:] = obj.game.states_visible
-
-        return {'FINISHED'}
-
-
-class LOGIC_OT_show_states(bpy.types.Operator):
-    """Read currently visible states from mask for this netmode"""
-    bl_idname = "network.show_states"
-    bl_label = "Set the states for this netmode visible"
-
-    index = bpy.props.IntProperty()
-
-    @classmethod
-    def poll(cls, context):
-        return context.active_object is not None
-
-    def execute(self, context):
-        obj = context.active_object
-
-        active_state = obj.states[self.index]
-        obj.game.states_visible = active_state.states
-
-        for area in bpy.context.screen.areas:
-            if area.type != 'LOGIC_EDITOR':
-                continue
-
-            area.tag_redraw()
-
-        return {'FINISHED'}
-
-
-def determine_mro(*bases):
-    """Calculate the Method Resolution Order of bases using the C3 algorithm.
-
-    Suppose you intended creating a class K with the given base classes. This
-    function returns the MRO which K would have, *excluding* K itself (since
-    it doesn't yet exist), as if you had actually created the class.
-
-    Another way of looking at this, if you pass a single class K, this will
-    return the linearization of K (the MRO of K, *including* itself).
-    """
-    seqs = [list(C.__mro__) for C in bases] + [list(bases)]
-    res = []
-    while True:
-        non_empty = list(filter(None, seqs))
-        if not non_empty:
-            # Nothing left to process, we're done.
-            return tuple(res)
-
-        for seq in non_empty:  # Find merge candidates among seq heads.
-            candidate = seq[0]
-            not_head = [s for s in non_empty if candidate in s[1:]]
-            if not_head:
-                # Reject the candidate.
-                candidate = None
-            else:
-                break
-
-        if not candidate:
-            raise TypeError("inconsistent hierarchy, no C3 MRO is possible")
-
-        res.append(candidate)
-        for seq in non_empty:
-            # Remove candidate.
-            if seq[0] == candidate:
-                del seq[0]
-
-
-def get_active_item(collection, index):
-    if index >= len(collection):
-        return None
-
-    return collection[index]
-
-
-def update_item(source, destination, destination_data=None):
-    try:
-        item_dict = dict(source.items())
-
-    except TypeError:
-        invalid_members = list(dir(bpy.types.Struct)) + ['rna_type']
-        item_dict = {k: getattr(source, k) for k in dir(source) if not k in invalid_members}
-
-    if destination_data is not None:
-        item_dict.update(destination_data)
-        pass
-
-    for key, value in item_dict.items():
-        destination[key] = value
-
-
-def update_collection(source, destination, condition=None):
-    original = {}
-
-    for prop in destination:
-        original[prop.name] = prop.items()
-
-    destination.clear()
-
-    for prop in source:
-        if callable(condition) and not condition(prop):
-            continue
-
-        attr = destination.add()
-        update_item(prop, attr, original.get(prop.name))
-
-
 on_update_handlers = []
 on_save_handlers = []
 pre_game_handlers = []
@@ -921,7 +372,7 @@ def run_callbacks(handlers):
         callback(context)
 
 
-@whilst_not_busy("update")
+@if_not_busy("update")
 @bpy.app.handlers.persistent
 def on_update(scene):
     run_callbacks(on_update_handlers)
@@ -1051,6 +502,10 @@ def update_attributes(context):
 
 
 def verify_text_files(check_modified=False):
+    """Verify that all required text files are included in Blend
+
+    :param check_modified: optionally check text files are up to date
+    """
     for filename in REQUIRED_FILES:
         source_dir = get_addon_folder()
         source_path = path.join(source_dir, filename)
@@ -1110,6 +565,16 @@ def clean_modules(context):
     return unwanted_modules
 
 
+def is_replicable(obj):
+    if not isclass(obj):
+        return False
+
+    if not issubclass(obj, Replicable) or obj is Replicable:
+        return False
+
+    return True
+
+
 def update_templates(context):
     try:
         obj = context.object
@@ -1151,14 +616,8 @@ def update_templates(context):
     templates.clear()
 
     required_templates = []
-    for name, value in getmembers(module):
+    for name, value in getmembers(module, is_replicable):
         if name.startswith("_"):
-            continue
-
-        if not isclass(value):
-            continue
-
-        if not issubclass(value, Replicable) or value is Replicable:
             continue
 
         if name in HIDDEN_BASES:
@@ -1261,9 +720,9 @@ def set_network_global_var(context):
 
 def poll_version_checker(context):
     """Check for any update results"""
-    for name, result in version_checker.results:
-        if not result:
-            outdated_modules.append(name)
+    for name, is_up_to_date in version_checker.results:
+        if not is_up_to_date:
+            bpy.ops.wm.display_info('INVOKE_DEFAULT', message="{} is out of date!".format(name))
 
 
 def send_version_check_requests():
@@ -1285,6 +744,7 @@ def pre_game_save(context):
     save_state(context)
 
 
+# Handler dispatchers
 on_update_handlers.append(update_attributes)
 on_update_handlers.append(update_network_logic)
 on_update_handlers.append(update_text_files)
@@ -1293,10 +753,11 @@ on_update_handlers.append(update_use_network)
 on_update_handlers.append(check_dispatcher_exists)
 on_update_handlers.append(poll_version_checker)
 
-pre_game_handlers.append(on_save)
+pre_game_handlers.append(pre_game_save)
 pre_game_handlers.append(clean_modules)
 pre_game_handlers.append(reload_text_files)
 
+on_save_handlers.append(on_save)
 on_load_handlers.append(set_network_global_var)
 
 
@@ -1324,6 +785,7 @@ def register():
 
 def unregister():
     bpy.utils.unregister_module(__name__)
+
     bpy.app.handlers.scene_update_post.remove(on_update)
     bpy.app.handlers.save_post.remove(on_save)
     bpy.app.handlers.load_post.remove(on_load)
