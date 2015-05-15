@@ -1,7 +1,7 @@
 from bpy import types, props, utils
 
 from .configuration import NETWORK_ENUMS, TYPE_ENUMS
-from .utilities import update_item, determine_mro
+from .utilities import determine_mro
 
 
 class AttributeGroup(types.PropertyGroup):
@@ -72,8 +72,13 @@ class TemplateAttributeDefault(types.PropertyGroup):
     def value_name(self):
         return "value_{}".format(self.type.lower())
 
-    def get_items(self, context):
-        return []
+    @property
+    def value(self):
+        return getattr(self, self.value_name)
+
+    @value.setter
+    def value(self, value):
+        setattr(self, self.value_name, value)
 
     name = props.StringProperty(description="Name of template attribute default value")
     type = props.EnumProperty(description="Data type of template attribute default value", items=TYPE_ENUMS)
@@ -82,7 +87,6 @@ class TemplateAttributeDefault(types.PropertyGroup):
     value_float = props.FloatProperty()
     value_string = props.StringProperty()
     value_bool = props.BoolProperty()
-    value_enum = props.EnumProperty(items=get_items)
 
 
 utils.register_class(TemplateAttributeDefault)
@@ -99,22 +103,26 @@ class ResolvedTemplateAttributeDefault(types.PropertyGroup):
         return "value_{}".format(self.type.lower())
 
     @property
+    def value(self):
+        return getattr(self, self.value_name)
+
+    @value.setter
+    def value(self, value):
+        setattr(self, self.value_name, value)
+
+    @property
     def modified(self):
         return self.hash != self.original_hash
-
-    def get_items(self, context):
-        return []
 
     original_hash = props.StringProperty()
     name = props.StringProperty(description="Name of resolved template attribute default value")
     type = props.EnumProperty(description="Data type of resolved template attribute default value",
-                                  items=TYPE_ENUMS)
+                              items=TYPE_ENUMS)
 
     value_int = props.IntProperty()
     value_float = props.FloatProperty()
     value_string = props.StringProperty()
     value_bool = props.BoolProperty()
-    value_enum = props.EnumProperty(items=get_items)
 
 
 utils.register_class(ResolvedTemplateAttributeDefault)
@@ -168,7 +176,11 @@ def on_template_updated(self, context):
                 continue
 
             destination = obj_defaults.add()
-            update_item(source, destination)
+
+            destination.name = source.name
+            destination.type = source.type
+            destination.value = source.value
+
             destination.original_hash = source.hash
 
 

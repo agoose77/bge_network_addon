@@ -1,5 +1,8 @@
 from bpy import types, props, utils
 
+from .configuration import DEFAULT_TEMPLATE_MODULES
+from .utilities import get_active_item
+
 
 class LOGIC_OT_add_rpc(types.Operator):
     """Add a new RPC call"""

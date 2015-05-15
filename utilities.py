@@ -71,33 +71,28 @@ def type_to_enum_type(type_):
     return types[type_]
 
 
-def update_item(source, destination, destination_data=None):
-    try:
-        item_dict = dict(source.items())
+def copy_logic_properties_to_collection(source, destination, condition=None):
+    visited_keys = set()
 
-    except TypeError:
-        invalid_members = list(dir(types.Struct)) + ['rna_type']
-        item_dict = {k: getattr(source, k) for k in dir(source) if not k in invalid_members}
-
-    if destination_data is not None:
-        item_dict.update(destination_data)
-        pass
-
-    for key, value in item_dict.items():
-        destination[key] = value
-
-
-def update_collection(source, destination, condition=None):
-    original = {}
-
-    for prop in destination:
-        original[prop.name] = prop.items()
-
-    destination.clear()
-
-    for prop in source:
-        if callable(condition) and not condition(prop):
+    for source_property in source:
+        if callable(condition) and not condition(source_property):
             continue
 
-        attr = destination.add()
-        update_item(prop, attr, original.get(prop.name))
+        prop_name = source_property.name
+
+        try:
+            target_property = destination[prop_name]
+
+        except KeyError:
+            target_property = destination.add()
+
+        target_property.name = source_property.name
+        target_property.type = source_property.type
+
+        visited_keys.add(prop_name)
+
+    # Remove non existent values
+    destination_keys = {a.name for a in destination}
+    for key in (destination_keys - visited_keys):
+        index = destination.find(key)
+        destination.remove(index)

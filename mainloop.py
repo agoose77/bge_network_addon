@@ -21,6 +21,7 @@ from bge_game_system.physics import BGEPhysicsSystem
 from bge_game_system.definitions import BGEComponent, BGEComponentLoader
 
 from collections import defaultdict, OrderedDict, deque
+from contextlib import ExitStack
 from json import load, loads, dumps
 from os import path, listdir
 from math import log
@@ -111,10 +112,10 @@ def instantiate_actor_from_obj(obj):
     if obj.name not in obj.scene.objectsInactive:
         network_id = string_to_wrapped_int(obj.name, Replicable.MAXIMUM_REPLICABLES + 1)
         print("Found static network object: {}, assigning ID: {}".format(obj.name, network_id))
-        return cls(network_id, register_immediately=True, static=True)
+        return cls(network_id, static=True)
 
     else:
-        return cls(register_immediately=True)
+        return cls()
 
 
 def no_op_func(*args, **kwargs):
@@ -243,9 +244,9 @@ class MessageDispatcher:
     def message_listener_invoke_method(self, network_id, method_name):
         """Handle RPC messages"""
         try:
-            replicable = WorldInfo.get_replicable(network_id)
+            replicable = Replicable[network_id]
 
-        except LookupError:
+        except KeyError:
             return
 
         getattr(replicable, method_name)()
@@ -254,9 +255,9 @@ class MessageDispatcher:
     def message_listener_rpc(self, network_id, rpc_name):
         """Handle RPC messages"""
         try:
-            replicable = WorldInfo.get_replicable(network_id)
+            replicable = Replicable[network_id]
 
-        except LookupError:
+        except KeyError:
             return
 
         obj = replicables_to_game_objects[replicable]
@@ -318,12 +319,6 @@ def listener(cont):
 
     subjects = message_sens.subjects
     message_dispatcher.handle_messages(subjects)
-
-
-def update_graphs():
-    """Update isolated resource graphs"""
-    Replicable.update_graph()
-    Signal.update_graph()
 
 
 def signal_to_message(*args, signal, target, **kwargs):
@@ -419,7 +414,7 @@ def {name}(self{args}) -> {returns}:
 properties = set(({}))
 
 def on_notify(self, name):
-    yield from super().on_notify(name)
+    super().on_notify(name)
 
     if name in self.properties:
         self.bge_interface.set_property(name, getattr(self, name))
@@ -573,7 +568,7 @@ class ControllerManager(SignalListener):
             print("Cannot reassign pawn from network object with no controller")
             return
 
-        new_pawn = replicable_cls(register_immediately=True)
+        new_pawn = replicable_cls()
         controller.possess(new_pawn)
 
         # Associate network object with this initialiser
@@ -593,7 +588,7 @@ class ControllerManager(SignalListener):
     def on_assigned(self, replicable_name, initialiser_id):
         controller = self.pending_controllers.popleft()
         cls = Replicable.from_type_name(replicable_name)
-        replicable = cls(register_immediately=True)
+        replicable = cls()
         controller.possess(replicable)
         # Associate network object with this initialiser
         self.initialisation_manager.associate_pawn_with_initialiser(initialiser_id,  replicable)
@@ -750,19 +745,29 @@ class BGESetupComponent(BGEComponent):
 message_dispatcher = MessageDispatcher()
 
 
+class Scene:
+
+    def __init__(self, scene):
+        self._scene = scene
+        self._replicable_context = Replicable.get_context(scene.name)
+        self._physics_manager = BGEPhysicsSystem(no_op_func, no_op_func)
+
+    def update(self, delta_time):
+        with self._replicable_context:
+            self._physics_manager.update(delta_time)
+
 class GameLoop(FixedTimeStepManager, SignalListener):
 
     def __init__(self):
         super().__init__()
 
         self.pending_exit = False
+
         # Set default step function
         self.on_step = self.step_default
 
         print("Waiting for netmode assignment message")
-
         self.register_signals()
-        update_graphs()
 
     def enable_network(self, netmode):
         # Load configuration
@@ -808,9 +813,6 @@ class GameLoop(FixedTimeStepManager, SignalListener):
         print("Loading definitions from scene objects")
         for scene in logic.getSceneList():
             load_object_definitions(scene)
-
-        # Update any subscriptions
-        update_graphs()
 
         # Set network as active update function
         self.on_step = self.step_network
@@ -858,10 +860,6 @@ class GameLoop(FixedTimeStepManager, SignalListener):
         self.check_exit()
 
     def step_network(self, delta_time):
-        # Handle this outside of usual update
-        if WorldInfo.netmode == Netmodes.server:
-            WorldInfo.update_clock(delta_time)
-
         scene = self.network_scene
 
         # Initialise network objects if they're added
@@ -872,10 +870,7 @@ class GameLoop(FixedTimeStepManager, SignalListener):
 
             instantiate_actor_from_obj(obj)
 
-        update_graphs()
-
         self.network.receive()
-        update_graphs()
 
         # Set network states
         self.state_manager.set_states()
@@ -884,9 +879,9 @@ class GameLoop(FixedTimeStepManager, SignalListener):
         logic.NextFrame()
 
         # Catch any deleted BGE objects from BGE
-        for actor in WorldInfo.subclass_of(SCAActor):
+        for actor in Replicable.subclass_of_type(SCAActor).copy():
             if not actor.bge_interface.is_alive:
-                actor.deregister(immediately=True)
+                actor.deregister()
 
         # Update Timers
         TimerUpdateSignal.invoke(delta_time)
@@ -896,12 +891,11 @@ class GameLoop(FixedTimeStepManager, SignalListener):
 
         if WorldInfo.netmode != Netmodes.server:
             PlayerInputSignal.invoke(delta_time, self.input_manager.state)
-            update_graphs()
 
         # Update main logic (Replicable update)
         PropertySynchroniseSignal.invoke(delta_time)
+
         LogicUpdateSignal.invoke(delta_time)
-        update_graphs()
 
         self.physics_manager.update(delta_time)
 
@@ -917,6 +911,10 @@ class GameLoop(FixedTimeStepManager, SignalListener):
         network_metrics = self.network.metrics
         if network_metrics.sample_age >= self.metric_interval:
             network_metrics.reset_sample_window()
+
+        # Handle this outside of usual update
+        if WorldInfo.netmode == Netmodes.server:
+            WorldInfo.update_clock(delta_time)
 
         # Check if exit is required
         self.check_exit()

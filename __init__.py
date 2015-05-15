@@ -43,7 +43,7 @@ from game_system.configobj import ConfigObj
 from network.replicable import Replicable
 
 # Submodules
-from .utilities import get_active_item, if_not_busy, update_collection
+from .utilities import get_active_item, if_not_busy, copy_logic_properties_to_collection
 from .version_checker import RemoteVersionChecker
 from .property_groups import *
 from .configuration import *
@@ -396,6 +396,7 @@ def on_game_pre(scene):
 def save_state(context):
     network_scene = active_network_scene
     if network_scene is None:
+        print("No network scene exists, nothing to save...")
         return
 
     data_path = bpy.path.abspath("//{}".format(DATA_PATH))
@@ -468,9 +469,14 @@ def get_addon_folder():
     return path.dirname(__file__)
 
 
-def property_allowed_as_argument(rpc_call, prop):
-    if prop.replicate:
-        return rpc_call.target == "SERVER" and not prop.replicate_for_owner
+def is_valid_variable_name(name):
+    stripped_underscore = name.replace('_', '')
+    return stripped_underscore.isalnum() and not stripped_underscore[0].isnumeric()
+
+
+def attribute_allowed_as_argument(rpc_call, attr):
+    if attr.replicate:
+        return rpc_call.target == "SERVER" and not attr.replicate_for_owner
 
     return True
 
@@ -485,10 +491,11 @@ def update_attributes(context):
     obj = context.object
     attributes = obj.attributes
 
-    update_collection(obj.game.properties, attributes, lambda p: " " not in p.name)
+    copy_logic_properties_to_collection(obj.game.properties, attributes, lambda p: is_valid_variable_name(p.name))
 
     for rpc_call in obj.rpc_calls:
-        update_collection(attributes, rpc_call.arguments, lambda prop: property_allowed_as_argument(rpc_call, prop))
+        copy_logic_properties_to_collection(attributes, rpc_call.arguments,
+                                   lambda prop: attribute_allowed_as_argument(rpc_call, prop))
 
     if not obj.states:
         server = obj.states.add()
@@ -757,7 +764,7 @@ pre_game_handlers.append(pre_game_save)
 pre_game_handlers.append(clean_modules)
 pre_game_handlers.append(reload_text_files)
 
-on_save_handlers.append(on_save)
+on_save_handlers.append(save_state)
 on_load_handlers.append(set_network_global_var)
 
 
