@@ -1,10 +1,12 @@
 from network.world_info import WorldInfo
+from network.replicable import Replicable
 from network.rules import ReplicationRulesBase
 
 from game_system.controllers import PawnController, PlayerPawnController
 from game_system.entities import Actor
 from game_system.replication_info import ReplicationInfo
 
+from controllers import IRCChatController
 from mainloop import ControllerPendingAssignmentSignal
 
 
@@ -17,7 +19,7 @@ class Rules(ReplicationRulesBase):
         replicable.deregister()
     
     def post_initialise(self, replication_stream):
-        cont = PlayerPawnController()
+        cont = IRCChatController()
         ControllerPendingAssignmentSignal.invoke(cont)
         return cont
             
