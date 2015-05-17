@@ -20,7 +20,7 @@ bl_info = {
     "name": "PyAuthServer BGE Addon",
     "description": "Interfaces PyAuthServer for networking.",
     "author": "Angus Hollands",
-    "version": (1, 1, 2),
+    "version": (1, 1, 4),
     "blender": (2, 74, 0),
     "location": "LOGIC_EDITOR > UI > NETWORKING",
     "warning": "",
@@ -358,39 +358,6 @@ class NetworkPanel(bpy.types.Panel):
 
         else:
             self.layout.label("Networking Must Be Enabled For This Scene", icon='ERROR')
-
-
-on_update_handlers = []
-on_save_handlers = []
-pre_game_handlers = []
-on_load_handlers = []
-
-
-def run_callbacks(handlers):
-    context = bpy.context
-    for callback in handlers:
-        callback(context)
-
-
-@if_not_busy("update")
-@bpy.app.handlers.persistent
-def on_update(scene):
-    run_callbacks(on_update_handlers)
-
-
-@bpy.app.handlers.persistent
-def on_save(dummy):
-    run_callbacks(on_save_handlers)
-
-
-@bpy.app.handlers.persistent
-def on_load(dummy):
-    run_callbacks(on_load_handlers)
-
-
-@bpy.app.handlers.persistent
-def on_game_pre(scene):
-    run_callbacks(pre_game_handlers)
 
 
 def save_state(context):
@@ -751,21 +718,62 @@ def pre_game_save(context):
     save_state(context)
 
 
+def run_callbacks(handlers):
+    context = bpy.context
+    for callback in handlers:
+        callback(context)
+
+
+on_update_if_active_handlers = []
+on_update_global_handlers = []
+
+on_save_if_active_handlers = []
+on_load_global_handlers = []
+pre_game_if_active_handlers = []
+
+
+@if_not_busy("update")
+@bpy.app.handlers.persistent
+def on_update(scene):
+    run_callbacks(on_update_global_handlers)
+
+    if active_network_scene:
+        run_callbacks(on_update_if_active_handlers)
+
+
+@bpy.app.handlers.persistent
+def on_save(dummy):
+    if active_network_scene:
+        run_callbacks(on_save_if_active_handlers)
+
+
+@bpy.app.handlers.persistent
+def on_load(dummy):
+    run_callbacks(on_load_global_handlers)
+
+
+@bpy.app.handlers.persistent
+def on_game_pre(scene):
+    if active_network_scene:
+        run_callbacks(pre_game_if_active_handlers)
+
+
 # Handler dispatchers
-on_update_handlers.append(update_attributes)
-on_update_handlers.append(update_network_logic)
-on_update_handlers.append(update_text_files)
-on_update_handlers.append(update_templates)
-on_update_handlers.append(update_use_network)
-on_update_handlers.append(check_dispatcher_exists)
-on_update_handlers.append(poll_version_checker)
+on_update_if_active_handlers.append(update_attributes)
+on_update_if_active_handlers.append(update_network_logic)
+on_update_if_active_handlers.append(update_text_files)
+on_update_if_active_handlers.append(update_templates)
+on_update_if_active_handlers.append(check_dispatcher_exists)
 
-pre_game_handlers.append(pre_game_save)
-pre_game_handlers.append(clean_modules)
-pre_game_handlers.append(reload_text_files)
+on_update_global_handlers.append(update_use_network)
+on_update_global_handlers.append(poll_version_checker)
 
-on_save_handlers.append(save_state)
-on_load_handlers.append(set_network_global_var)
+pre_game_if_active_handlers.append(pre_game_save)
+pre_game_if_active_handlers.append(clean_modules)
+pre_game_if_active_handlers.append(reload_text_files)
+
+on_save_if_active_handlers.append(save_state)
+on_load_global_handlers.append(set_network_global_var)
 
 
 registered = False
