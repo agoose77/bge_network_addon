@@ -734,7 +734,7 @@ def poll_version_checker(context):
         else:
             required_network_version = result['required_network_version']
 
-            network_version = "1.1.0"#get_network_version()
+            network_version = get_network_version()
             bge_version = result['addon_version']
 
             is_invalid = not result['is_latest'] or network_version != required_network_version
