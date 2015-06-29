@@ -20,7 +20,7 @@ bl_info = {
     "name": "PyAuthServer BGE Addon",
     "description": "Interfaces PyAuthServer for networking.",
     "author": "Angus Hollands",
-    "version": (1, 1, 4),
+    "version": (1, 1, 5),
     "blender": (2, 74, 0),
     "location": "LOGIC_EDITOR > UI > NETWORKING",
     "warning": "",
@@ -38,6 +38,8 @@ from os import path, makedirs, listdir
 from shutil import rmtree
 from inspect import getmembers, isclass
 from logging import warning, info, exception
+import webbrowser
+from urllib.parse import urlencode
 
 from game_system.configobj import ConfigObj
 from network.replicable import Replicable
@@ -89,6 +91,21 @@ def on_scene_use_network_updated_protected(scene, context):
 
 def on_scene_use_network_updated(self, scene):
     on_scene_use_network_updated_protected(self, scene)
+
+
+class AddonPreferences(bpy.types.AddonPreferences):
+    bl_idname = __name__
+
+    update_on_startup = bpy.props.BoolProperty(
+            name="Check For Updates On Startup",
+            default=True,
+            )
+
+    def draw(self, context):
+        layout = self.layout
+
+        layout.prop(self, "update_on_startup")
+        layout.operator("network.check_for_updates", icon='FILE_REFRESH')
 
 
 class SystemPanel(bpy.types.Panel):
@@ -692,22 +709,56 @@ def set_network_global_var(context):
             return
 
 
+def get_network_version():
+    local_filepath = path.join(__import__("network").__path__[0], "version.txt")
+
+    with open(local_filepath, "r") as local_file:
+        return local_file.read()
+
+
+def get_addon_version():
+    local_filepath = path.join(get_addon_folder(), "version.txt")
+
+    with open(local_filepath, "r") as local_file:
+        return local_file.read()
+
+
 def poll_version_checker(context):
     """Check for any update results"""
-    for name, is_up_to_date in version_checker.results:
-        if not is_up_to_date:
-            bpy.ops.wm.display_info('INVOKE_DEFAULT', message="{} is out of date!".format(name))
+    for result in version_checker.results:
+        # Check if it failed
+        if result['state'] != "success":
+            bpy.ops.wm.display_info('INVOKE_DEFAULT',
+            message="Update check failed: {}".format(result['message']))
 
+        else:
+            required_network_version = result['required_network_version']
+
+            network_version = "1.1.0"#get_network_version()
+            bge_version = result['addon_version']
+
+            is_invalid = not result['is_latest'] or network_version != required_network_version
+
+            if is_invalid:
+                url = "http://coldcinder.co.uk/bge_network_addon/mismatch.php"
+                args = {"bge_version": bge_version,
+                        "network_version": network_version}
+                args_url = "{}?{}".format(url, urlencode(args))
+                webbrowser.open(args_url)
 
 def send_version_check_requests():
     """Send version comparison request to worker thread"""
-    remote_path = "https://raw.githubusercontent.com/agoose77/PyAuthServer/master/network/"
-    local_path = __import__("network").__path__[0]
-    version_checker.check_version("Network", remote_path, local_path, "version.txt")
+    local_filepath = path.join(get_addon_folder(), "version.txt")
 
-    remote_path = "https://raw.githubusercontent.com/agoose77/bge_network_addon/master/"
-    local_path = get_addon_folder()
-    version_checker.check_version("BGE Network Addon", remote_path, local_path, "version.txt")
+    with open(local_filepath, "r") as local_file:
+        local_version = local_file.read()
+
+    url = "http://coldcinder.co.uk/bge_network_addon/version.php"
+    version_checker.check_version(url, local_version)
+
+
+# Set the update callback
+set_check_for_updates(send_version_check_requests)
 
 
 def pre_game_save(context):
@@ -785,15 +836,18 @@ def register():
     if registered:
         return
 
-    # Check updates
-    send_version_check_requests()
-
     bpy.utils.register_module(__name__)
 
     bpy.app.handlers.scene_update_post.append(on_update)
     bpy.app.handlers.save_post.append(on_save)
     bpy.app.handlers.game_pre.append(on_game_pre)
     bpy.app.handlers.load_post.append(on_load)
+
+    # Check for updates
+    user_preferences = bpy.context.user_preferences
+    addon_prefs = user_preferences.addons[__name__].preferences
+    if addon_prefs.update_on_startup:
+        send_version_check_requests()
 
     registered = True
 

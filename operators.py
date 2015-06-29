@@ -4,6 +4,14 @@ from .configuration import DEFAULT_TEMPLATE_MODULES
 from .utilities import get_active_item
 
 
+_check_for_updates = None
+
+
+def set_check_for_updates(func):
+    global _check_for_updates
+    _check_for_updates = func
+
+
 class LOGIC_OT_add_rpc(types.Operator):
     """Add a new RPC call"""
     bl_idname = "network.add_rpc_call"
@@ -166,6 +174,19 @@ class WM_OT_info_operator(types.Operator):
 
         col = layout.column()
         col.label(text=self.message, icon='INFO')
+
+
+class LOGIC_OT_check_for_updates(types.Operator):
+    """Create group for network objects in scene"""
+    bl_idname = "network.check_for_updates"
+    bl_label = "Check for updates to network systems"
+
+    def execute(self, context):
+        if callable(_check_for_updates):
+            _check_for_updates()
+            print("UPDATE")
+
+        return {'FINISHED'}
 
 
 def register():

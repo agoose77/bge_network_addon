@@ -2,7 +2,9 @@
 from contextlib import contextmanager
 from queue import Queue
 from threading import Thread
+from json import loads
 from urllib.request import urlopen
+from urllib.parse import urlencode
 
 from os import path
 
@@ -12,12 +14,12 @@ def version_to_tuple(string):
 
 
 class SafeQueue(Queue):
-    
+
     @contextmanager
     def get(self, block=False, timeout=None):
         try:
             yield super().get(block, timeout)
-        
+
         finally:
             self.task_done()
 
@@ -26,7 +28,7 @@ class RemoteVersionChecker(Thread):
 
     def __init__(self):
         super().__init__()
-        
+
         self._requests = SafeQueue()
         self._results = SafeQueue()
 
@@ -37,20 +39,16 @@ class RemoteVersionChecker(Thread):
             with results.get() as result:
                 yield result
 
-    def check_version(self, name, remote_path, local_path, filename):
-        remote_filepath = path.join(remote_path, filename)
-        local_filepath = path.join(local_path, filename)
-        
-        with open(local_filepath, "r") as local_file:
-            local_version = version_to_tuple(local_file.read())
-            
-        self._requests.put_nowait((name, remote_filepath, local_version))
+    def check_version(self, url, local_version):
+        self._requests.put_nowait((url, local_version))
 
     def run(self):
         while True:
-            with self._requests.get(block=True) as (name, address, local_version):
-                data = urlopen(address)
-                remote_version = version_to_tuple(data.read().decode())
+            with self._requests.get(block=True) as (address, local_version):
+                data = {'version': local_version}
 
-                result = (name, remote_version <= local_version)
+                modified_address = "{}?{}".format(address, urlencode(data))
+                result_ = urlopen(modified_address)
+                result = loads(result_.read().decode())
+
                 self._results.put(result, block=True)
