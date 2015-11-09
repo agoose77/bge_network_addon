@@ -41,11 +41,10 @@ from logging import warning, info, exception
 import webbrowser
 from urllib.parse import urlencode
 
-from game_system.configobj import ConfigObj
 from network.replicable import Replicable
 
 # Submodules
-from .utilities import get_active_item, if_not_busy, copy_logic_properties_to_collection
+from .utilities import if_not_busy, copy_logic_properties_to_collection
 from .version_checker import RemoteVersionChecker
 from .property_groups import *
 from .configuration import *
@@ -125,7 +124,7 @@ class SystemPanel(bpy.types.Panel):
                                                                   description="Time (in seconds) between successive "
                                                                               "network metrics updates")
         bpy.types.Scene.use_network = bpy.props.BoolProperty(name="Use Networking", default=False,
-                                                             description="Set current scene as network scene",
+                                                             description="Set current scene as root network scene",
                                                              update=on_scene_use_network_updated)
 
     def draw_header(self, context):
@@ -147,8 +146,7 @@ class SystemPanel(bpy.types.Panel):
 
 def obj_panel_network_poll(cls, context):
     obj = context.object
-    scene = context.scene
-    return obj is not None and obj.use_network and scene.use_network
+    return obj is not None and obj.use_network
 
 
 class RPCPanel(bpy.types.Panel):
@@ -362,19 +360,13 @@ class NetworkPanel(bpy.types.Panel):
     def draw_header(self, context):
         obj = context.object
 
-        if context.scene.use_network:
-            self.layout.prop(obj, "use_network", text="")
+        self.layout.prop(obj, "use_network", text="")
 
     def draw(self, context):
         obj = context.object
         layout = self.layout
         layout.active = obj.use_network
-
-        if context.scene.use_network:
-            layout.prop(obj, "remote_role")
-
-        else:
-            self.layout.label("Networking Must Be Enabled For This Scene", icon='ERROR')
+        layout.prop(obj, "remote_role")
 
 
 def save_state(context):
@@ -383,69 +375,64 @@ def save_state(context):
         print("No network scene exists, nothing to save...")
         return
 
-    data_path = bpy.path.abspath("//{}".format(DATA_PATH))
+    root_data_path = bpy.path.abspath("//{}".format(DATA_PATH))
 
-    try:
-        file_names = listdir(data_path)
+    for scene in bpy.data.scenes:
+        data_path = path.join(root_data_path, scene.name)
+        try:
+            file_names = listdir(data_path)
 
-    except FileNotFoundError:
-        makedirs(data_path, exist_ok=True)
-        file_names = listdir(data_path)
+        except FileNotFoundError:
+            makedirs(data_path, exist_ok=True)
+            file_names = listdir(data_path)
 
-    config = {}
+        for obj in scene.objects:
+            obj_name = obj.name
+            obj_path = path.join(data_path, obj_name)
 
-    for obj in network_scene.objects:
-        obj_name = obj.name
-        obj_path = path.join(data_path, obj_name)
+            # Remove any previous network objects
+            if not obj.use_network:
+                if obj_name in file_names:
+                    rmtree(obj_path)
 
-        # Remove any previous network objects
-        if not obj.use_network:
-            if obj_name in file_names:
-                rmtree(obj_path)
+                continue
 
-            continue
+            definition_filepath = path.join(obj_path, "actor.definition")
 
-        definition_filepath = path.join(obj_path, "actor.definition")
+            data = dict()
 
-        data = dict()
+            get_property_value = lambda n: obj.game.properties[n].value
+            data['attributes'] = {a.name: {'default': get_property_value(a.name),
+                                           'initial_only': not a.replicate_after_initial,
+                                           'ignore_owner': not a.replicate_for_owner}
+                                  for a in obj.attributes if a.replicate}
 
-        get_property_value = lambda n: obj.game.properties[n].value
-        data['attributes'] = {a.name: {'default': get_property_value(a.name),
-                                       'initial_only': not a.replicate_after_initial,
-                                       'ignore_owner': not a.replicate_for_owner}
-                              for a in obj.attributes if a.replicate}
+            data['rpc_calls'] = {r.name: {'arguments': {a.name: a.type for a in r.arguments if a.replicate},
+                                          'target': r.target, 'reliable': r.reliable,
+                                          'simulated': r.simulated} for r in obj.rpc_calls}
 
-        data['rpc_calls'] = {r.name: {'arguments': {a.name: a.type for a in r.arguments if a.replicate},
-                                      'target': r.target, 'reliable': r.reliable,
-                                      'simulated': r.simulated} for r in obj.rpc_calls}
+            data['templates'] = ["{}.{}".format(m.name, c.name) for m in obj.templates for c in m.templates if c.active]
+            data['defaults'] = {d.name: getattr(d, d.value_name) for d in obj.template_defaults if d.modified}
+            data['states'] = {c.name: list(c.states) for c in obj.states}
+            data['simulated_states'] = list(obj.simulated_states)
+            data['remote_role'] = obj.remote_role
 
-        data['templates'] = ["{}.{}".format(m.name, c.name) for m in obj.templates for c in m.templates if c.active]
-        data['defaults'] = {d.name: getattr(d, d.value_name) for d in obj.template_defaults if d.modified}
-        data['states'] = {c.name: list(c.states) for c in obj.states}
-        data['simulated_states'] = list(obj.simulated_states)
-        data['remote_role'] = obj.remote_role
+            # Make sure we have directory for actor definition
+            definition_directory = path.dirname(definition_filepath)
+            makedirs(definition_directory, exist_ok=True)
 
-        # Make sure we have directory for actor definition
-        definition_directory = path.dirname(definition_filepath)
-        makedirs(definition_directory, exist_ok=True)
+            with open(definition_filepath, "w") as file:
+                dump(data, file)
 
-        with open(definition_filepath, "w") as file:
-            dump(data, file)
+    # Main settings
+    main_config = {}
+    main_config['port'] = network_scene.port
+    main_config['tick_rate'] = network_scene.tick_rate
+    main_config['metric_interval'] = network_scene.metric_interval
+    main_config['scene'] = network_scene.name
 
-        configuration = ConfigObj()
-        configuration['BGE'] = {'object_name': obj.name}
-
-        configuration_filepath = path.join(data_path, "{}/definition.cfg".format(obj.name))
-        with open(configuration_filepath, "wb") as file:
-            configuration.write(file)
-
-    config['port'] = network_scene.port
-    config['tick_rate'] = network_scene.tick_rate
-    config['metric_interval'] = network_scene.metric_interval
-    config['scene'] = network_scene.name
-
-    with open(path.join(data_path, "main.definition"), "w") as file:
-        dump(config, file)
+    with open(path.join(root_data_path, "main.definition"), "w") as file:
+        dump(main_config, file)
 
 
 def get_addon_folder():
@@ -745,6 +732,7 @@ def poll_version_checker(context):
                         "network_version": network_version}
                 args_url = "{}?{}".format(url, urlencode(args))
                 webbrowser.open(args_url)
+
 
 def send_version_check_requests():
     """Send version comparison request to worker thread"""

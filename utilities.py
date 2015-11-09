@@ -62,8 +62,9 @@ def determine_mro(*bases):
 
 def get_bpy_enum(enum):
     enum_name = enum.__name__.rstrip("s").lower()
-    return [(x.upper(), x.replace('_', ' ').title(), "{} {}".format(x.capitalize(), enum_name), i)
-            for i, x in enumerate(enum.values)]
+    print(list(enum))
+    return [(x.upper(), x.replace('_', ' ').title(), "{} {}".format(x.capitalize(), enum_name), 'BLANK1', v)
+            for x, v in enum]
 
 
 def type_to_enum_type(type_):
