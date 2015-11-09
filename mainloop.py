@@ -1,34 +1,25 @@
-from network.descriptors import Attribute
-from network.decorators import with_tag, reliable, simulated, set_annotation, requires_permission
+from network.replication import Serialisable
+
+from network.annotations.decorators import reliable, simulated, get_annotation, set_annotation, requires_permission
 from network.enums import Netmodes, Roles
-from network.network import Network
+from network.network import NetworkManager
 from network.replicable import Replicable
-from network.signals import DisconnectSignal, Signal, SignalListener
-from network.type_flag import TypeFlag
-from network.world_info import WorldInfo
+from network.type_serialisers import TypeInfo
 
-from game_system.game_loop import FixedTimeStepManager, OnExitUpdate
+from game_system.fixed_timestep import FixedTimeStepManager, ForcedLoopExit
 from game_system.resources import ResourceManager
-from game_system.signals import LogicUpdateSignal, TimerUpdateSignal, PlayerInputSignal
-from game_system.timer import Timer
 
-# Dummy logic loop support for non-patched blender
-from bge import logic, types
-types.KX_PythonLogicLoop = type("", (), {})
-
-from bge_game_system.inputs import BGEInputManager
-from bge_game_system.physics import BGEPhysicsSystem
-from bge_game_system.definitions import BGEComponent, BGEComponentLoader
+from bge_game_system.world import World
+from bge_game_system.scene import Scene
 
 from collections import defaultdict, OrderedDict, deque
 from contextlib import ExitStack
+from inspect import getmembers
 from json import load, loads, dumps
 from os import path, listdir
 from math import log
 
 from actors import *
-from signals import *
-
 
 DATA_PATH = "network_data"
 DELIMITER = ","
@@ -71,28 +62,6 @@ class BpyResolver:
         return dict(STRING=str, INT=int, BOOL=bool, FLOAT=float, TIMER=float)[type_]
 
 
-# Entity loader
-class GameObjectInjector:
-    """Inject GameObject into entity loader"""
-
-    game_object = None
-    _default_load = None
-
-    _find_or_create_object = BGEComponentLoader.find_or_create_object
-
-    @classmethod
-    def find_or_create_object(cls, entity, definition):
-        if cls.game_object is not None:
-            _pending_obj, cls.game_object = cls.game_object, None
-            return _pending_obj
-
-        return cls._find_or_create_object(entity, definition)
-
-
-BGEComponentLoader.find_or_create_object = GameObjectInjector.find_or_create_object
-ResourceManager.data_path = logic.expandPath("//{}".format(DATA_PATH))
-
-
 def string_to_wrapped_int(string, boundary):
     value = 0
     for char in string:
@@ -107,19 +76,16 @@ def instantiate_actor_from_obj(obj):
     """
     cls = classes[obj.name]
 
-    GameObjectInjector.game_object = obj
+    # TODO spawn this object
 
     if obj.name not in obj.scene.objectsInactive:
-        network_id = string_to_wrapped_int(obj.name, Replicable.MAXIMUM_REPLICABLES + 1)
+        # TODO
+        network_id = string_to_wrapped_int(obj.name, 255 + 1)
         print("Found static network object: {}, assigning ID: {}".format(obj.name, network_id))
         return cls(network_id, static=True)
 
     else:
         return cls()
-
-
-def no_op_func(*args, **kwargs):
-    return None
 
 
 def load_configuration(name):
@@ -168,9 +134,6 @@ def load_object_definitions(scene):
 
         classes[name] = ReplicableFactory.from_configuration(name, configuration)
 
-
-from network.decorators import set_annotation, get_annotation
-from inspect import getmembers
 
 prefix_listener = lambda value: set_annotation("message_prefix")(value)
 get_prefix_listener = lambda value: get_annotation("message_prefix")(value)
@@ -745,18 +708,7 @@ class BGESetupComponent(BGEComponent):
 message_dispatcher = MessageDispatcher()
 
 
-class Scene:
-
-    def __init__(self, scene):
-        self._scene = scene
-        self._replicable_context = Replicable.get_context(scene.name)
-        self._physics_manager = BGEPhysicsSystem(no_op_func, no_op_func)
-
-    def update(self, delta_time):
-        with self._replicable_context:
-            self._physics_manager.update(delta_time)
-
-class GameLoop(FixedTimeStepManager, SignalListener):
+class GameLoop(FixedTimeStepManager):
 
     def __init__(self):
         super().__init__()
@@ -767,7 +719,8 @@ class GameLoop(FixedTimeStepManager, SignalListener):
         self.on_step = self.step_default
 
         print("Waiting for netmode assignment message")
-        self.register_signals()
+
+        self.world = None
 
     def enable_network(self, netmode):
         # Load configuration
@@ -779,30 +732,32 @@ class GameLoop(FixedTimeStepManager, SignalListener):
         with open(main_definition_path, "r") as file:
             data = load(file)
 
-        self.configuration_file_names = {path.splitext(f)[0] for f in listdir(file_path)}
-        self.network_update_interval = 1 / data['tick_rate']
-        self.metric_interval = data['metric_interval']
-        self.network_scene = next(s for s in logic.getSceneList() if s.name == data['scene'])
-        BGEComponentLoader.scene = self.network_scene
+        # self.configuration_file_names = {path.splitext(f)[0] for f in listdir(file_path)}
+        # self.network_update_interval = 1 / data['tick_rate']
+        # self.metric_interval = data['metric_interval']
+        # self.network_scene = next(s for s in logic.getSceneList() if s.name == data['scene'])
+        # BGEComponentLoader.scene = self.network_scene
+        #
+        #
+        # # If is server
+        # if netmode == Netmodes.server:
+        #     self.initialisation_manager = PawnInitialisationManager()
+        #     self.connection_manager = ControllerManager(self.initialisation_manager)
+        #
+        #     tick_rate = logic.getLogicTicRate()
+        #     port = data['port']
+        #
+        # else:
+        #     port = 0
 
-        WorldInfo.netmode = netmode
-        print("Running as a {}".format(Netmodes[WorldInfo.netmode]))
+        tick_rate = logic.getLogicTicRate()
 
-        # If is server
-        if WorldInfo.netmode == Netmodes.server:
-            self.initialisation_manager = PawnInitialisationManager()
-            self.connection_manager = ControllerManager(self.initialisation_manager)
+        self.world = World(netmode, tick_rate, file_path)
+        logic.world = self.world
 
-            WorldInfo.tick_rate = logic.getLogicTicRate()
-            port = data['port']
-
-        else:
-            port = 0
+        self.network_manager = NetworkManager(self.world, "", (data['port'] if netmode==Netmodes.server else 0))
 
         # Initialise systems
-        self.network = Network("", port)
-        self.physics_manager = BGEPhysicsSystem(no_op_func, no_op_func)
-        self.input_manager = BGEInputManager()
         self.signal_forwarder = SignalForwarder(signal_to_message)
         self.state_manager = StateManager()
 
@@ -845,14 +800,6 @@ class GameLoop(FixedTimeStepManager, SignalListener):
         if self.pending_exit:
             raise OnExitUpdate()
 
-    @NetmodeAssignedSignal.on_global
-    def on_netmode_assigned(self, netmode):
-        """Callback when netmode has been assigned
-
-        :param netmode: netmode to assign
-        """
-        self.enable_network(netmode)
-
     def step_default(self, delta_time):
         logic.NextFrame()
 
@@ -894,9 +841,7 @@ class GameLoop(FixedTimeStepManager, SignalListener):
 
         # Update main logic (Replicable update)
         PropertySynchroniseSignal.invoke(delta_time)
-
         LogicUpdateSignal.invoke(delta_time)
-
         self.physics_manager.update(delta_time)
 
         # Transmit new state to remote peer
@@ -922,4 +867,4 @@ class GameLoop(FixedTimeStepManager, SignalListener):
 
 def main():
     mainloop = GameLoop()
-    mainloop.delegate()
+    mainloop.run()
