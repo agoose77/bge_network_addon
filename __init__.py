@@ -186,7 +186,7 @@ class RPCPanel(bpy.types.Panel):
         rpc_data.prop(active_rpc, 'target')
         rpc_data.prop(active_rpc, 'reliable', icon='LIBRARY_DATA_DIRECT' if active_rpc.reliable else
                       'LIBRARY_DATA_INDIRECT')
-        rpc_data.prop(active_rpc, 'simulated', icon='SOLO_ON' if active_rpc.simulated else 'SOLO_OFF')
+        rpc_data.prop(active_rpc, 'simulated', icon='PMARKER_SEL' if active_rpc.simulated else 'PMARKER')
 
         rpc_args = rpc_settings.column()
         rpc_args.label("Arguments", icon='SETTINGS')
@@ -207,7 +207,6 @@ class StatesPanel(bpy.types.Panel):
     def register(cls):
         bpy.types.Object.states_index = bpy.props.IntProperty(default=0, update=state_changed)
         bpy.types.Object.states = bpy.props.CollectionProperty(name="Network States", type=StateGroup)
-        bpy.types.Object.simulated_states = bpy.props.BoolVectorProperty(name="Simulated States", size=30)
 
     def draw_states_row(self, data, name, layout, icon_func=None):
         top_i = 0
@@ -236,16 +235,6 @@ class StatesPanel(bpy.types.Panel):
 
         obj = context.object
 
-        sub_layout = layout.split(0.3)
-        sub_layout.label("Simulated States")
-
-        box = sub_layout.box()
-        self.draw_states_row(obj, 'simulated_states', box)
-
-        column = box.column()
-        set_states = column.operator("network.set_states_from_visible", icon='VISIBLE_IPO_ON', text="")
-        set_states.set_simulated = True
-
         layout.label("Netmode States")
         sub_layout = layout.split(0.3)
         sub_layout.template_list('RENDER_RT_StateList', "States", obj, "states", obj, "states_index", rows=3)
@@ -255,11 +244,47 @@ class StatesPanel(bpy.types.Panel):
             return
 
         box = sub_layout.box()
-        simulated_icon = lambda i: 'KEY_HLT' if obj.simulated_states[i] else 'BLANK1'
+        network_role = obj.remote_role
+
+        no_states = {'DUMB_PROXY', 'NONE'}
+
+        is_client = is_client = active_state.name.upper() == "CLIENT"
+
+        def simulated_icon(index):
+            is_simulated = active_state.simulated_states[index]
+            is_active = active_state.states[index]
+
+            if not is_active:
+                return "BLANK1"
+
+            if is_client:
+                if network_role in no_states:
+                    return "BLANK1"
+
+                if network_role == "SIMULATED_PROXY" and not is_simulated:
+                    return "CANCEL"
+
+                if network_role == "AUTONOMOUS_PROXY":
+                    if not is_simulated:
+                        return "SAVE_AS"
+
+            return 'FILE_TICK'
+
         self.draw_states_row(active_state, 'states', box, icon_func=simulated_icon)
 
         column = box.column()
         column.operator("network.set_states_from_visible", icon='VISIBLE_IPO_ON', text="")
+
+        if is_client:
+            sub_layout = layout.split(0.3)
+            sub_layout.label("Simulated States")
+
+            box = sub_layout.box()
+            self.draw_states_row(active_state, 'simulated_states', box)
+
+            column = box.column()
+            set_states = column.operator("network.set_states_from_visible", icon='VISIBLE_IPO_ON', text="")
+            set_states.mode = "simulated_states"
 
 
 # Add support for modifying inherited parameters?
@@ -413,8 +438,8 @@ def save_state(context):
 
             data['templates'] = ["{}.{}".format(m.name, c.name) for m in obj.templates for c in m.templates if c.active]
             data['defaults'] = {d.name: getattr(d, d.value_name) for d in obj.template_defaults if d.modified}
-            data['states'] = {c.name: list(c.states) for c in obj.states}
-            data['simulated_states'] = list(obj.simulated_states)
+            data['states'] = {c.name: {'states': list(c.states), 'simulated_states': list(c.simulated_states)}
+                              for c in obj.states}
             data['remote_role'] = obj.remote_role
 
             # Make sure we have directory for actor definition
@@ -833,9 +858,9 @@ def register():
 
     # Check for updates
     user_preferences = bpy.context.user_preferences
-    addon_prefs = user_preferences.addons[__name__].preferences
-    if addon_prefs.update_on_startup:
-        send_version_check_requests()
+    # addon_prefs = user_preferences.addons[__name__].preferences
+    # if addon_prefs.update_on_startup:
+    #     send_version_check_requests()
 
     registered = True
 

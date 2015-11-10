@@ -57,6 +57,7 @@ class StateGroup(types.PropertyGroup):
 
     name = props.StringProperty(description="Netmode to which these states belong")
     states = props.BoolVectorProperty(size=30)
+    simulated_states = props.BoolVectorProperty(size=30)
 
 
 utils.register_class(StateGroup)

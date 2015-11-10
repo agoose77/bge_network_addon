@@ -134,7 +134,7 @@ class SCAActor(_Actor):
 
         return mask
 
-    def set_network_state(self):
+    def set_network_state(self, just_initialised=False):
         """Unset any states from other netmodes, then set correct states
         """
         states = self.states
@@ -159,9 +159,15 @@ class SCAActor(_Actor):
         else:
             local_role = roles.local
             active_states = states[netmode]
+
+            # On creation, we don't know if we are the autonomous proxy or not, so regress to simulated_proxy until then?
+        # TODO
+            not_sure_autonomous_proxy = local_role == Roles.autonomous_proxy and just_initialised
+
             for i, (state_bit, simulated_bit) in enumerate(zip(active_states, simulated_states)):
                 # Permission checks
-                if local_role > simulated_proxy or (simulated_bit and local_role == simulated_proxy):
+                if (local_role > simulated_proxy and not not_sure_autonomous_proxy) or \
+                        (simulated_bit and local_role == simulated_proxy):
                     state |= state_bit << i
 
         if not state:
@@ -169,7 +175,7 @@ class SCAActor(_Actor):
             used_states = {c.state for c in self._obj.controllers}
 
             try:
-                state = next(c for c in all_states if not c in used_states)
+                state = next(c for c in all_states if c not in used_states)
                 state_index = int(log(state, 2)) + 1
                 print("{}: Using default state of {}".format(self._obj.name, state_index))
 

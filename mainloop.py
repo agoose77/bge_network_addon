@@ -333,6 +333,15 @@ class Scene(_Scene):
 
         self._load_configuration_files()
 
+    def cull_invalid_objects(self):
+        to_remove = []
+        for entity in self.entity_builder.entity_to_game_obj.keys():
+            if not entity.is_alive:
+                to_remove.append(entity)
+
+        for entity in to_remove:
+            self.remove_replicable(entity)
+
     def _forward_message_to_bge(self, message_name, *args, **kwargs):
         #if not args and not kwargs:
         logic.sendMessage(message_prefixes_global["SCENE_MESSAGE"] + message_name, "<internal>")
@@ -568,7 +577,10 @@ class GameLoop(FixedTimeStepManager):
     def step_network(self, delta_time):
         self.time_since_sent += delta_time
 
-        bge_objects = {}
+        self.network_manager.receive()
+
+        # Update BGE gameloop
+        logic.NextFrame()
 
         # Initialise network objects if they're added
         for bge_scene in logic.getSceneList():
@@ -606,18 +618,7 @@ class GameLoop(FixedTimeStepManager):
                 replicable_cls = scene.entity_classes[obj_name]
                 return scene.add_replicable(replicable_cls)
 
-            # Set of scene objects at start of frame
-            bge_objects[bge_scene] = set(bge_scene.objects)
-
-        self.network_manager.receive()
-
-        # Update BGE gameloop
-        logic.NextFrame()
-
-        # # Catch any deleted BGE objects from BGE
-        # for actor in Replicable.subclass_of_type(SCAActor).copy():
-        #     if not actor.bge_interface.is_alive:
-        #         actor.deregister()
+            scene.cull_invalid_objects()
 
         self.world.tick()
 

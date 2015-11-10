@@ -98,7 +98,9 @@ class LOGIC_OT_set_states_from_visible(types.Operator):
     bl_idname = "network.set_states_from_visible"
     bl_label = "Save logic states for this netmode"
 
-    set_simulated = props.BoolProperty(default=False)
+    mode = props.EnumProperty(items=(("states", "states", "states"),
+                                     ("simulated_states", "simulated_states", "simulated_states")),
+                            default="states")
 
     @classmethod
     def poll(cls, context):
@@ -106,12 +108,9 @@ class LOGIC_OT_set_states_from_visible(types.Operator):
 
     def execute(self, context):
         obj = context.active_object
-        if self.set_simulated:
-            states = obj.simulated_states
 
-        else:
-            states = obj.states[obj.states_index].states
-
+        mode_states = obj.states[obj.states_index]
+        states = getattr(mode_states, self.mode)
         states[:] = obj.game.states_visible
 
         return {'FINISHED'}
