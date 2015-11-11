@@ -503,12 +503,13 @@ class GameLoop(FixedTimeStepManager):
         self.set_netmode(netmode)
 
     def _on_scene_message(self, bge_scene, message_name):
+        # TODO THIS IS WRONG!
         scene = self.world.scenes[bge_scene.name]
         scene.messenger.send(message_name)
 
     def _on_self_message(self, bge_scene, network_id, method_name):
         scene = self.world.scenes[bge_scene.name]
-
+        # TODO THIS IS WRONG!
         try:
             replicable = scene.replicables[network_id]
 
@@ -519,6 +520,7 @@ class GameLoop(FixedTimeStepManager):
 
     def _on_invoke_method(self, bge_scene, network_id, method_name):
         """Handle RPC messages"""
+        # TODO THIS IS WRONG!
         scene = self.world.scenes[bge_scene.name]
 
         try:
@@ -530,6 +532,7 @@ class GameLoop(FixedTimeStepManager):
         getattr(replicable, method_name)()
 
     def _on_invoke_rpc(self, bge_scene, network_id, rpc_name):
+        # TODO THIS IS WRONG!
         """Handle RPC messages"""
         scene = self.world.scenes[bge_scene.name]
 
@@ -542,16 +545,19 @@ class GameLoop(FixedTimeStepManager):
         replicable.invoke_rpc(rpc_name)
 
     def _on_controller_assign(self, bge_scene, network_id, replicable_class_name):
+        # TODO THIS IS WRONG!
         """Handle connection controller initial pawn assignment"""
         scene = self.world.scenes[bge_scene.name]
         scene.controller_manager.on_assigned_pawn(network_id, replicable_class_name)
 
     def _on_controller_reassign(self, bge_scene, network_id, replicable_class_name):
+        # TODO THIS IS WRONG!
         """Handle connection controller subsequent pawn assignment"""
         scene = self.world.scenes[bge_scene.name]
         scene.controller_manager.on_reassigned_pawn(network_id, replicable_class_name)
 
     def _on_new_pawn(self, bge_scene, sender_id, message_name):
+        # TODO THIS IS WRONG!
         scene = self.world.scenes[bge_scene.name]
         scene.controller_manager.send_to_new_pawn(sender_id, message_name)
 
