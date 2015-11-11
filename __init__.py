@@ -329,8 +329,8 @@ class TemplatesPanel(ObjectSettingsPanel):
 
     @classmethod
     def register(cls):
-        bpy.types.Object.templates_index = bpy.props.IntProperty(default=0)
-        bpy.types.Object.templates = bpy.props.CollectionProperty(name="Templates", type=TemplateModule)
+        bpy.types.Object.modules_index = bpy.props.IntProperty(default=0)
+        bpy.types.Object.modules = bpy.props.CollectionProperty(name="Templates", type=TemplateModule)
         bpy.types.Object.template_defaults = bpy.props.CollectionProperty(name="TemplateDefaults",
                                                                           type=ResolvedTemplateAttributeDefault)
         bpy.types.Object.templates_defaults_index = bpy.props.IntProperty(default=0)
@@ -341,14 +341,14 @@ class TemplatesPanel(ObjectSettingsPanel):
         obj = context.object
 
         rpc_list = layout.row()
-        rpc_list.template_list('RENDER_RT_TemplateGroupList', "Templates", obj, "templates", obj, "templates_index",
+        rpc_list.template_list('RENDER_RT_TemplateGroupList', "Templates", obj, "modules", obj, "modules_index",
                                rows=3)
 
         row = rpc_list.column(align=True)
-        row.operator("network.add_template", icon='ZOOMIN', text="")
-        row.operator("network.remove_template", icon='ZOOMOUT', text="")
+        row.operator("network.add_template_module", icon='ZOOMIN', text="")
+        row.operator("network.remove_template_module", icon='ZOOMOUT', text="")
 
-        active_template = get_active_item(obj.templates, obj.templates_index)
+        active_template = get_active_item(obj.modules, obj.modules_index)
         if active_template is None:
             return
 
@@ -443,7 +443,29 @@ def save_state(context):
                                           'target': r.target, 'reliable': r.reliable,
                                           'simulated': r.simulated} for r in obj.rpc_calls}
 
-            data['templates'] = ["{}.{}".format(m.name, c.name) for m in obj.templates for c in m.templates if c.active]
+            templates = set()
+            template_indices = {}
+
+            remove_sca_actor = False
+            for module in obj.modules:
+                for template in module.templates:
+                    if not template.active:
+                        continue
+
+                    if template.inherits_from_sca_actor:
+                        remove_sca_actor = True
+
+                    full_path = "{}.{}".format(module.name, template.name)
+                    templates.add(full_path)
+                    template_indices[full_path] = template.definition_index
+
+            if remove_sca_actor:
+                templates.remove(SCA_ACTOR_MODULE)
+
+
+#            templates = {"{}.{}".format(m.name, c.name) for m in obj.modules for c in m.templates if c.active}
+
+            data['templates'] = sorted(templates, key=template_indices.__getitem__)
             data['defaults'] = {d.name: getattr(d, d.value_name) for d in obj.template_defaults if d.modified}
             data['states'] = {c.name: {'states': list(c.states), 'simulated_states': list(c.simulated_states)}
                               for c in obj.states}
@@ -594,18 +616,18 @@ def update_templates(context):
         return
 
     for module_path in DEFAULT_TEMPLATE_MODULES:
-        if module_path in obj.templates:
+        if module_path in obj.modules:
             continue
 
-        template = obj.templates.add()
+        template = obj.modules.add()
         template.name = module_path
+        print("ADD TEMPLATE", template, module_path)
 
-    template_module = get_active_item(obj.templates, obj.templates_index)
+    template_module = get_active_item(obj.modules, obj.modules_index)
     if template_module is None:
         return
 
     template_path = template_module.name
-
     if not template_path:
         return
 
@@ -637,6 +659,7 @@ def update_templates(context):
 
         template = templates.add()
         template.name = name
+        template.inherits_from_sca_actor = issubclass(value, SCAActor)
 
         if name in DEFAULT_TEMPLATE_MODULES.get(template_path, []):
             required_templates.append(template)

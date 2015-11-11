@@ -1,16 +1,11 @@
 from game_system.entity import Actor as _Actor
 
-from json import dumps
 from messages import *
 
 from math import log
 from network.annotations.decorators import simulated
 from network.enums import Netmodes, Roles
 from functools import partial
-
-
-def get_bound_prefix(prefix, subject, instance_id):
-    return prefix + dumps((subject, instance_id))
 
 
 class SCAActor(_Actor):
@@ -46,7 +41,7 @@ class SCAActor(_Actor):
         if name in self.property_names:
             self.set_property(name, getattr(self, name))
 
-        self.receive_prefixed_message(message_prefixes_unique['NOTIFICATION'], name)
+        self.receive_prefixed_message(message_prefixes_replicable['NOTIFICATION'], name)
 
     @property
     def is_alive(self):
@@ -58,27 +53,14 @@ class SCAActor(_Actor):
     def set_property(self, name, value):
         self.game_object[name] = value
 
-    def _class_receive_no_broadcast(self, subject):
-        """Send message that won't be picked up as a broadcast"""
-        self.game_object.sendMessage(subject, "", self.game_object.name)
-
-    def send_message(self, subject, body="", target=""):
-        """Send message to game objects
-
-        :param subject: message subject
-        :param body: message body
-        :param target: name of objects to receive message
-        """
-        self.game_object.sendMessage(subject, body, target)
-
     def receive_prefixed_message(self, prefix, subject):
         """Send message to a specific instance that won't be picked up as a broadcast
 
         :param prefix: prefix of subject
         :param subject: subject of message
         """
-        modified_subject = get_bound_prefix(prefix, subject, self.unique_id)
-        self._class_receive_no_broadcast(modified_subject)
+        modified_subject = encode_replicable_info(subject, self)
+        self.game_object.sendMessage(prefix + modified_subject, "<invalid>", self.game_object.name)
 
     def _convert_message_logic(self):
         """Convert message sensors & actuators to use unique subjects
@@ -88,15 +70,14 @@ class SCAActor(_Actor):
         """
         from bge import types
 
-        instance_id = self.unique_id
-        message_self = message_prefixes_unique["SELF_MESSAGE"]
+        message_self = message_prefixes_replicable["SELF_MESSAGE"]
 
+        # Convert sensors
         sensors = [s for s in self.game_object.sensors if isinstance(s, types.KX_NetworkMessageSensor)]
-
         for message_handler in sensors:
             message_subject = message_handler.subject
 
-            for prefix in message_prefixes_unique.values():
+            for prefix in message_prefixes_replicable.values():
                 if message_subject.startswith(prefix):
                     break
 
@@ -104,17 +85,18 @@ class SCAActor(_Actor):
                 continue
 
             name = message_subject[len(prefix):]
-            message_handler.subject = get_bound_prefix(prefix, name, instance_id)
+            message_handler.subject = prefix + encode_replicable_info(name, self)
 
             # Subscribe to messages
             if prefix == message_self:
                 self.messenger.add_subscriber(name, partial(self.receive_prefixed_message, prefix, name))
 
+        # Convert actuators
         actuators = [c for c in self.game_object.actuators if isinstance(c, types.KX_NetworkMessageActuator)]
         for message_handler in actuators:
             message_subject = message_handler.subject
 
-            for prefix in message_prefixes_unique.values():
+            for prefix in message_prefixes_replicable.values():
                 if message_subject.startswith(prefix):
                     break
 
@@ -122,7 +104,7 @@ class SCAActor(_Actor):
                 continue
 
             name = message_subject[len(prefix):]
-            message_handler.subject = get_bound_prefix(prefix, name, instance_id)
+            message_handler.subject = prefix + encode_replicable_info(name, self)
 
     def set_network_states(self, just_initialised=False):
         """Unset any states from other netmodes, then set correct states
@@ -176,7 +158,7 @@ class SCAActor(_Actor):
         for name_, value in zip(arguments, data):
             self.game_object[name_] = value
 
-        self.receive_prefixed_message(message_prefixes_unique['RPC_INVOKE'], event_name)
+        self.receive_prefixed_message(message_prefixes_replicable['RPC_INVOKE'], event_name)
 
     def invoke_rpc(self, rpc_name):
         obj = self.game_object

@@ -1,5 +1,6 @@
 from bpy import types, props, utils
 
+from .actors import SCAActor
 from .configuration import NETWORK_ENUMS, TYPE_ENUMS
 from .utilities import determine_mro
 
@@ -135,7 +136,10 @@ def on_template_updated(self, context):
         return
 
     bases = {}
-    for template_module in obj.templates:
+
+    template_inherits_sca_actor = False
+
+    for template_module in obj.modules:
         template_path = template_module.name
 
         if not template_module.loaded:
@@ -154,8 +158,14 @@ def on_template_updated(self, context):
                 cls = getattr(module, template.name)
                 bases[cls] = template
 
+                if template.inherits_from_sca_actor:
+                    template_inherits_sca_actor = True
+
     obj_defaults = obj.template_defaults
     obj_defaults.clear()
+
+    if template_inherits_sca_actor:
+        bases.pop(SCAActor)
 
     try:
         mro = determine_mro(*bases.keys())
@@ -163,12 +173,16 @@ def on_template_updated(self, context):
     except TypeError:
         return
 
+    definition_index = 0
     for cls in mro:
         try:
             template = bases[cls]
 
         except KeyError:
             continue
+
+        template.definition_index = definition_index
+        definition_index += 1
 
         for source in template.defaults:
             attribute_name = source.name
@@ -191,9 +205,12 @@ class TemplateClass(types.PropertyGroup):
     name = props.StringProperty(description="Name of template class")
     active = props.BoolProperty(description="Inherit this template class", update=on_template_updated)
     required = props.BoolProperty(description="If this template class is required by default")
+    inherits_from_sca_actor = props.BoolProperty()
 
     defaults = props.CollectionProperty(type=TemplateAttributeDefault)
     defaults_active = props.IntProperty()
+
+    definition_index = props.IntProperty(default=-1)
 
 
 utils.register_class(TemplateClass)

@@ -44,12 +44,12 @@ class LOGIC_OT_remove_rpc(types.Operator):
         return {'FINISHED'}
 
 
-class LOGIC_OT_add_template(types.Operator):
+class LOGIC_OT_add_template_module(types.Operator):
     """Load templates from a module"""
-    bl_idname = "network.add_template"
-    bl_label = "Add template"
+    bl_idname = "network.add_template_module"
+    bl_label = "Add template module"
 
-    path = props.StringProperty(name="Path", description="Path to templates")
+    path = props.StringProperty(name="Path", description="Path to template module")
 
     @classmethod
     def poll(cls, context):
@@ -68,16 +68,16 @@ class LOGIC_OT_add_template(types.Operator):
         except (ValueError, ImportError):
             return {'CANCELLED'}
 
-        template = obj.templates.add()
-        template.name = name
+        module = obj.modules.add()
+        module.name = name
 
         return {'FINISHED'}
 
 
-class LOGIC_OT_remove_template(types.Operator):
+class LOGIC_OT_remove_template_module(types.Operator):
     """Unload templates from a module"""
-    bl_idname = "network.remove_template"
-    bl_label = "Remove template"
+    bl_idname = "network.remove_template_module"
+    bl_label = "Remove template module"
 
     @classmethod
     def poll(cls, context):
@@ -85,10 +85,10 @@ class LOGIC_OT_remove_template(types.Operator):
 
     def execute(self, context):
         obj = context.active_object
-        active_template = get_active_item(obj.templates, obj.templates_index)
+        active_template = get_active_item(obj.modules, obj.modules_index)
 
-        if not active_template.name in DEFAULT_TEMPLATE_MODULES:
-            obj.templates.remove(obj.templates_index)
+        if active_template.name not in DEFAULT_TEMPLATE_MODULES:
+            obj.modules.remove(obj.modules_index)
 
         return {'FINISHED'}
 
