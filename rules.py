@@ -1,14 +1,12 @@
 from network.replicable import Replicable
-from network.rules import ReplicationRulesBase
 
 from game_system.replicables import PawnController, PlayerPawnController, ReplicationInfo
 from game_system.entity import Actor
 
 from controllers import IRCChatController
-from mainloop import ControllerPendingAssignmentSignal
 
 
-class Rules(ReplicationRulesBase):
+class Rules:
     
     def pre_initialise(self, connection_info):
         return
@@ -35,7 +33,4 @@ class Rules(ReplicationRulesBase):
             return True
 
 
-def init():
-    rules = Rules()
-
-    WorldInfo.rules = rules
+# TODO allow BGE (logic bricks) scene to handle incoming controller - spawn in right scene

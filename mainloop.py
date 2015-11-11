@@ -232,7 +232,7 @@ class ControllerManager:
 
     @staticmethod
     def request_assignment():
-        logic.sendMessage(message_subjects['CONTROLLER_REQUEST'])
+        logic.sendMessage(message_subjects['CONTROLLER_REQUEST'], '<internal>')
 
     def on_new_controller(self, controller):
         self.pending_controllers.append(controller)
@@ -305,7 +305,8 @@ class EntityBuilder(_EntityBuilder):
 
         entity.rpc_arguments = self.sorted_rpc_argument_info[object_name]
         entity.states = configuration['states']
-        entity.simulated_states = configuration['simulated_states']
+        entity.game_object = obj
+        entity.set_network_states(just_initialised=True)
 
         obj["_entity"] = ref(entity)
 
@@ -343,8 +344,8 @@ class Scene(_Scene):
             self.remove_replicable(entity)
 
     def _forward_message_to_bge(self, message_name, *args, **kwargs):
-        #if not args and not kwargs:
-        logic.sendMessage(message_prefixes_global["SCENE_MESSAGE"] + message_name, "<internal>")
+        if not args and not kwargs:
+            logic.sendMessage(message_prefixes_global["SCENE_MESSAGE"] + message_name, "<internal>")
 
     def _load_configuration_files(self):
         bge_scene = self.bge_scene
@@ -441,6 +442,7 @@ class GameLoop(FixedTimeStepManager):
         self.add_unique_listener('CONTROLLER_REASSIGN', self._on_controller_reassign)
         self.add_unique_listener('SELF_MESSAGE', self._on_self_message)
         self.add_global_listener('SCENE_MESSAGE', self._on_scene_message)
+        self.add_global_listener('CONNECT_TO', self._on_connect_to)
 
         print("Network started")
 
@@ -459,6 +461,7 @@ class GameLoop(FixedTimeStepManager):
         for subject, body in messages:
             starts_with = subject.startswith
 
+            # Ignore internal messages
             if body == "<internal>":
                 continue
 
@@ -474,6 +477,16 @@ class GameLoop(FixedTimeStepManager):
                         payload, recipient_id = loads(following_prefix)
                         for listener in listeners:
                             listener(bge_scene, recipient_id, payload)
+
+    def _on_connect_to(self, bge_scene, target):
+        ip_address, port = target.split("::")
+        if not ip_address:
+            ip_address = "localhost"
+
+        port = int(port)
+
+        self.network_manager.connect_to(ip_address, port)
+        print("CONNECT")
 
     def _on_set_netmode(self, bge_scene, netmode_name):
         try:
@@ -552,21 +565,20 @@ class GameLoop(FixedTimeStepManager):
 
         # Check if exit key is pressed
         if logic.keyboard.events[exit_key] == logic.KX_INPUT_JUST_ACTIVATED:
-            quit_game = lambda: setattr(self, "pending_exit", True)
+
             # Exit immediately!
             if not self.world or (self.world.netmode == Netmodes.server):
-                raise ForcedLoopExit()
+                raise ForcedLoopExit("Exit key pressed")
 
             else:
                 self.world.messenger.send("pending_disconnect") # TODO trigger disconnect request
 
+                def quit_game():
+                    raise ForcedLoopExit("Disconnect timed out")
+
                 # Else abort
                 timeout = self.world.timer_manager.add_timer(0.6)
                 timeout.on_elapsed = quit_game
-
-        # If we're pending exit
-        if self.pending_exit:
-            raise ForcedLoopExit()
 
     def step_default(self, delta_time):
         logic.NextFrame()

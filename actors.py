@@ -18,18 +18,16 @@ class SCAActor(_Actor):
 
     property_names = set()
 
+    states = None
+    rpc_arguments = None
+    game_object = None
+
     def __init__(self, scene, unique_id, is_static=False):
         """Initialise new network object
 
         :param obj: GameObject instance
         """
-        self._obj = self.transform._game_object
-
-        self.states = {}
-        self.simulated_states = {}
-        self.rpc_arguments = {}
-
-        self.convert_message_logic()
+        self._convert_message_logic()
 
         scene.messenger.add_subscriber("sync_properties", self.sync_properties)
 
@@ -40,10 +38,10 @@ class SCAActor(_Actor):
 
     def on_replicated(self, name):
         super().on_replicated(name)
-        print("NAMe")
+
         if name == "roles":
             print("ROELS")
-            self.set_network_state()
+            self.set_network_states()
 
         if name in self.property_names:
             self.set_property(name, getattr(self, name))
@@ -52,17 +50,17 @@ class SCAActor(_Actor):
 
     @property
     def is_alive(self):
-        return not self._obj.invalid
+        return not self.game_object.invalid
 
     def get_property(self, name):
-        return self._obj[name]
+        return self.game_object[name]
 
     def set_property(self, name, value):
-        self._obj[name] = value
+        self.game_object[name] = value
 
     def _class_receive_no_broadcast(self, subject):
         """Send message that won't be picked up as a broadcast"""
-        self._obj.sendMessage(subject, "", self._obj.name)
+        self.game_object.sendMessage(subject, "", self.game_object.name)
 
     def send_message(self, subject, body="", target=""):
         """Send message to game objects
@@ -71,7 +69,7 @@ class SCAActor(_Actor):
         :param body: message body
         :param target: name of objects to receive message
         """
-        self._obj.sendMessage(subject, body, target)
+        self.game_object.sendMessage(subject, body, target)
 
     def receive_prefixed_message(self, prefix, subject):
         """Send message to a specific instance that won't be picked up as a broadcast
@@ -82,7 +80,7 @@ class SCAActor(_Actor):
         modified_subject = get_bound_prefix(prefix, subject, self.unique_id)
         self._class_receive_no_broadcast(modified_subject)
 
-    def convert_message_logic(self):
+    def _convert_message_logic(self):
         """Convert message sensors & actuators to use unique subjects
 
         :param identifier: unique identifier
@@ -93,7 +91,7 @@ class SCAActor(_Actor):
         instance_id = self.unique_id
         message_self = message_prefixes_unique["SELF_MESSAGE"]
 
-        sensors = [s for s in self._obj.sensors if isinstance(s, types.KX_NetworkMessageSensor)]
+        sensors = [s for s in self.game_object.sensors if isinstance(s, types.KX_NetworkMessageSensor)]
 
         for message_handler in sensors:
             message_subject = message_handler.subject
@@ -112,7 +110,7 @@ class SCAActor(_Actor):
             if prefix == message_self:
                 self.messenger.add_subscriber(name, partial(self.receive_prefixed_message, prefix, name))
 
-        actuators = [c for c in self._obj.actuators if isinstance(c, types.KX_NetworkMessageActuator)]
+        actuators = [c for c in self.game_object.actuators if isinstance(c, types.KX_NetworkMessageActuator)]
         for message_handler in actuators:
             message_subject = message_handler.subject
 
@@ -126,25 +124,11 @@ class SCAActor(_Actor):
             name = message_subject[len(prefix):]
             message_handler.subject = get_bound_prefix(prefix, name, instance_id)
 
-    @staticmethod
-    def get_state_mask(states):
-        mask = 0
-        for i, value in enumerate(states):
-            mask |= value << i
-
-        return mask
-
-    def set_network_state(self, just_initialised=False):
+    def set_network_states(self, just_initialised=False):
         """Unset any states from other netmodes, then set correct states
         """
         states = self.states
-        simulated_states = self.simulated_states
-
-        state = self._obj.state
-        get_mask = self.get_state_mask
-
-        for mask_netmode, netmode_states in states.items():
-            state &= ~get_mask(netmode_states)
+        state = 0
 
         simulated_proxy = Roles.simulated_proxy
         netmode = self.scene.world.netmode
@@ -158,11 +142,13 @@ class SCAActor(_Actor):
         # Set active states if simulated
         else:
             local_role = roles.local
-            active_states = states[netmode]
+            state_data = states[netmode]
 
-            # On creation, we don't know if we are the autonomous proxy or not, so regress to simulated_proxy until then?
-        # TODO
+            # Autonomous proxy but first run
             not_sure_autonomous_proxy = local_role == Roles.autonomous_proxy and just_initialised
+
+            simulated_states = state_data['simulated_states']
+            active_states = state_data['states']
 
             for i, (state_bit, simulated_bit) in enumerate(zip(active_states, simulated_states)):
                 # Permission checks
@@ -172,28 +158,28 @@ class SCAActor(_Actor):
 
         if not state:
             all_states = (1 << i for i in range(30))
-            used_states = {c.state for c in self._obj.controllers}
+            used_states = {c.state for c in self.game_object.controllers}
 
             try:
                 state = next(c for c in all_states if c not in used_states)
                 state_index = int(log(state, 2)) + 1
-                print("{}: Using default state of {}".format(self._obj.name, state_index))
+                print("{}: Using default state of {}".format(self.game_object.name, state_index))
 
             except ValueError:
-                print("{}: Required a default empty state, none available".format(self._obj.name))
+                print("{}: Required a default empty state, none available".format(self.game_object.name))
 
-        self._obj.state = state
+        self.game_object.state = state
 
     def dispatch_rpc(self, event_name, data):
         arguments = self.rpc_arguments[event_name]
 
         for name_, value in zip(arguments, data):
-            self._obj[name_] = value
+            self.game_object[name_] = value
 
         self.receive_prefixed_message(message_prefixes_unique['RPC_INVOKE'], event_name)
 
     def invoke_rpc(self, rpc_name):
-        obj = self._obj
+        obj = self.game_object
 
         rpc_args = self.rpc_arguments[rpc_name]
         rpc_data = [obj[arg_name] for arg_name in rpc_args]

@@ -144,19 +144,20 @@ class SystemPanel(bpy.types.Panel):
         layout.operator("network.select_all", icon='GROUP', text="Select Only Network Objects")
 
 
-def obj_panel_network_poll(cls, context):
-    obj = context.object
-    return obj is not None and obj.use_network
+class ObjectSettingsPanel(bpy.types.Panel):
+
+    @classmethod
+    def poll(cls, context):
+        obj = context.object
+        return obj is not None and obj.use_network
 
 
-class RPCPanel(bpy.types.Panel):
+class RPCPanel(ObjectSettingsPanel):
     bl_space_type = "LOGIC_EDITOR"
     bl_region_type = "UI"
     bl_label = "RPC Calls"
 
     COMPAT_ENGINES = {'BLENDER_GAME'}
-
-    poll = classmethod(obj_panel_network_poll)
 
     @classmethod
     def register(cls):
@@ -194,14 +195,12 @@ class RPCPanel(bpy.types.Panel):
                                "arguments_index", rows=3)
 
 
-class StatesPanel(bpy.types.Panel):
+class StatesPanel(ObjectSettingsPanel):
     bl_space_type = "LOGIC_EDITOR"
     bl_region_type = "UI"
     bl_label = "Network State"
 
     COMPAT_ENGINES = {'BLENDER_GAME'}
-
-    poll = classmethod(obj_panel_network_poll)
 
     @classmethod
     def register(cls):
@@ -215,9 +214,10 @@ class StatesPanel(bpy.types.Panel):
         if icon_func is None:
             icon_func = lambda index: 'BLANK1'
 
-        sub_layout = layout.column_flow(columns=3)
+        main_row = layout.row()
         for col_i in range(3):
-            column = sub_layout.column(align=True)
+            column = main_row.column(align=True)
+
             row = column.row(align=True)
             for _ in range(5):
                 icon = icon_func(top_i)
@@ -235,15 +235,22 @@ class StatesPanel(bpy.types.Panel):
 
         obj = context.object
 
+        split_width = 0.15
+
         layout.label("Netmode States")
-        sub_layout = layout.split(0.3)
-        sub_layout.template_list('RENDER_RT_StateList', "States", obj, "states", obj, "states_index", rows=3)
+        upper_sub_layout = layout.split(split_width)
+
+        upper_left = upper_sub_layout.column()
+        upper_left.template_list('RENDER_RT_StateList', "States", obj, "states", obj, "states_index", rows=3)
 
         active_state = get_active_item(obj.states, obj.states_index)
         if active_state is None:
             return
 
-        box = sub_layout.box()
+        # Top layer
+        upper_right = upper_sub_layout.column()
+        upper_sub_right = upper_right.split(0.92)
+        right_states = upper_sub_right.box()
         network_role = obj.remote_role
 
         no_states = {'DUMB_PROXY', 'NONE'}
@@ -255,47 +262,49 @@ class StatesPanel(bpy.types.Panel):
             is_active = active_state.states[index]
 
             if not is_active:
-                return "BLANK1"
+                return 'BLANK1'
 
             if is_client:
                 if network_role in no_states:
-                    return "BLANK1"
+                    return 'CANCEL'
 
-                if network_role == "SIMULATED_PROXY" and not is_simulated:
-                    return "CANCEL"
+                if network_role == 'SIMULATED_PROXY' and not is_simulated:
+                    return 'CANCEL'
 
-                if network_role == "AUTONOMOUS_PROXY":
+                if network_role == 'AUTONOMOUS_PROXY':
                     if not is_simulated:
-                        return "SAVE_AS"
+                        return 'SAVE_AS'
 
             return 'FILE_TICK'
 
-        self.draw_states_row(active_state, 'states', box, icon_func=simulated_icon)
+        self.draw_states_row(active_state, 'states', right_states, icon_func=simulated_icon)
+        upper_sub_right.operator("network.set_states_from_visible", icon='LOGIC', text="")
 
-        column = box.column()
-        column.operator("network.set_states_from_visible", icon='VISIBLE_IPO_ON', text="")
+        # Draw simulated states
+        is_client = active_state.name.upper() == "CLIENT"
 
         if is_client:
-            sub_layout = layout.split(0.3)
-            sub_layout.label("Simulated States")
+            lower_sub_layout = layout.split(split_width)
+            lower_sub_layout.label("Simulated States")
 
-            box = sub_layout.box()
-            self.draw_states_row(active_state, 'simulated_states', box)
+            lower_right = lower_sub_layout.column()
+            lower_sub_right = lower_right.split(0.92)
+            right_states = lower_sub_right.box()
+            network_role = obj.remote_role
 
-            column = box.column()
-            set_states = column.operator("network.set_states_from_visible", icon='VISIBLE_IPO_ON', text="")
-            set_states.mode = "simulated_states"
+            no_states = {'DUMB_PROXY', 'NONE'}
+
+            self.draw_states_row(active_state, 'simulated_states', right_states)
+            lower_sub_right.operator("network.set_states_from_visible", icon='LOGIC', text="")
 
 
 # Add support for modifying inherited parameters?
-class AttributesPanel(bpy.types.Panel):
+class AttributesPanel(ObjectSettingsPanel):
     bl_space_type = "LOGIC_EDITOR"
     bl_region_type = "UI"
     bl_label = "Replicated Attributes"
 
     COMPAT_ENGINES = {'BLENDER_GAME'}
-
-    poll = classmethod(obj_panel_network_poll)
 
     @classmethod
     def register(cls):
@@ -311,14 +320,12 @@ class AttributesPanel(bpy.types.Panel):
         layout.template_list('RENDER_RT_AttributeList', "Properties", obj, "attributes", obj, "attribute_index", rows=3)
 
 
-class TemplatesPanel(bpy.types.Panel):
+class TemplatesPanel(ObjectSettingsPanel):
     bl_space_type = "LOGIC_EDITOR"
     bl_region_type = "UI"
     bl_label = "Templates"
 
     COMPAT_ENGINES = {'BLENDER_GAME'}
-
-    poll = classmethod(obj_panel_network_poll)
 
     @classmethod
     def register(cls):
@@ -391,7 +398,7 @@ class NetworkPanel(bpy.types.Panel):
         obj = context.object
         layout = self.layout
         layout.active = obj.use_network
-        layout.prop(obj, "remote_role")
+        layout.prop(obj, "remote_role", icon='KEYINGSET')
 
 
 def save_state(context):

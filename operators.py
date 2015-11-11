@@ -130,8 +130,8 @@ class LOGIC_OT_show_states(types.Operator):
     def execute(self, context):
         obj = context.active_object
 
-        active_state = obj.states[self.index]
-        obj.game.states_visible = active_state.states
+        active_state_group = obj.states[self.index]
+        obj.game.states_visible = active_state_group.states
 
         for area in context.screen.areas:
             if area.type != 'LOGIC_EDITOR':

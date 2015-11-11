@@ -7,13 +7,14 @@ message_prefixes_unique = dict(
 
     RPC_INVOKE="@",
     NOTIFICATION="!",
-    SELF_MESSAGE="::",
+    SELF_MESSAGE="->",
     METHOD_INVOKE="#",
-    NEW_PAWN="NEW_PAWN::"
+    NEW_PAWN="NEW_PAWN->"
     )
 
 
 message_prefixes_global = dict(
     SET_NETMODE="NETMODE=",
-    SCENE_MESSAGE="SCENE::",
+    SCENE_MESSAGE="SCENE->",
+    CONNECT_TO="CONNECT->"
     )
