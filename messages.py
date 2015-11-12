@@ -24,6 +24,9 @@ message_prefixes_scene = dict(
     CONTROLLER_ASSIGN="NEW_PAWN=",
 )
 
+# CREATE_PAWN
+#
+
 
 def encode_object(subject, obj):
     scene = obj.scene

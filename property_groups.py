@@ -1,46 +1,41 @@
 from bpy import types, props, utils
 
-from .actors import SCAActor
 from .configuration import NETWORK_ENUMS, TYPE_ENUMS
 from .utilities import determine_mro
 
 
+def is_identifier(value):
+    assert value.isidentifier()
+
+
 class AttributeGroup(types.PropertyGroup):
-
     """PropertyGroup for Actor attributes"""
-
-    name = props.StringProperty(description="Name of network attribute")
-    type = props.StringProperty(description="Data type of network attribute")
-
-    replicate = props.BoolProperty(default=False, description="Replicate this attribute")
-
-    replicate_for_owner = props.BoolProperty(default=False, description="Replicate this attribute to the owner "
-                                                                            "client")
-    replicate_after_initial = props.BoolProperty(default=True, description="Replicate this attribute after initial "
-                                                                               "replication")
+    name = props.StringProperty(description="Name of game property")
+    type = props.StringProperty(description="Data type of game property")
+    replicate = props.BoolProperty(default=False, description="Replicate this game property")
+    replicate_for_owner = props.BoolProperty(default=False, description="Replicate this game property to the owner"
+                                                                        "client")
+    replicate_after_initial = props.BoolProperty(default=True, description="Replicate this game property after initial "
+                                                                           "replication")
 
 
 utils.register_class(AttributeGroup)
 
 
 class RPCArgumentGroup(types.PropertyGroup):
-
     """PropertyGroup for RPC arguments"""
 
-    name = props.StringProperty(description="Name of RPC argument")
+    name = props.StringProperty(description="Name of game property")
     type = props.StringProperty(description="Data type of RPC argument")
-
-    replicate = props.BoolProperty(default=False, description="Replicate this attribute")
+    replicate = props.BoolProperty(default=False, description="Replicate this game property with RPC call")
 
 
 utils.register_class(RPCArgumentGroup)
 
 
 class RPCGroup(types.PropertyGroup):
-
     """PropertyGroup for RPC calls"""
-
-    name = props.StringProperty(default="Function", description="Name of RPC call")
+    name = props.StringProperty("name", default="RPC", description="Name of RPC call")
     reliable = props.BoolProperty(default=False, description="Guarantee delivery of RPC call")
     simulated = props.BoolProperty(default=False, description="Allow execution for simulated proxies")
     target = props.EnumProperty(items=NETWORK_ENUMS, description="Netmode of RPC target")
@@ -53,10 +48,9 @@ utils.register_class(RPCGroup)
 
 
 class StateGroup(types.PropertyGroup):
-
     """PropertyGroup for RPC calls"""
 
-    name = props.StringProperty(description="Netmode to which these states belong")
+    netmode = props.StringProperty(description="Netmode to which these states belong")
     states = props.BoolVectorProperty(size=30)
     simulated_states = props.BoolVectorProperty(size=30)
 

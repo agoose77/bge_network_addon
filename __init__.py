@@ -256,7 +256,7 @@ class StatesPanel(ObjectSettingsPanel):
 
         no_states = {'DUMB_PROXY', 'NONE'}
 
-        is_client = is_client = active_state.name.upper() == "CLIENT"
+        is_client = is_client = active_state.netmode.upper() == "CLIENT"
 
         def simulated_icon(index):
             is_simulated = active_state.simulated_states[index]
@@ -280,9 +280,6 @@ class StatesPanel(ObjectSettingsPanel):
 
         self.draw_states_row(active_state, 'states', right_states, icon_func=simulated_icon)
         upper_sub_right.operator("network.set_states_from_visible", icon='LOGIC', text="")
-
-        # Draw simulated states
-        is_client = active_state.name.upper() == "CLIENT"
 
         if is_client:
             lower_sub_layout = layout.split(split_width)
@@ -437,7 +434,7 @@ def save_state(context):
 
             data['template'] = base_import_path
             data['defaults'] = {d.name: getattr(d, d.value_name) for d in obj.template.defaults}
-            data['states'] = {c.name: {'states': list(c.states), 'simulated_states': list(c.simulated_states)}
+            data['states'] = {c.netmode: {'states': list(c.states), 'simulated_states': list(c.simulated_states)}
                               for c in obj.states}
             data['remote_role'] = obj.remote_role
 
@@ -494,12 +491,11 @@ def update_attributes(context):
 
     if not obj.states:
         server = obj.states.add()
-
-        server.name = "Server"
+        server.netmode = "Server"
         server.states[1] = True
 
         client = obj.states.add()
-        client.name = "Client"
+        client.netmode = "Client"
         client.states[0] = True
 
 

@@ -137,7 +137,7 @@ def copy_logic_properties_to_collection(source, destination, condition=None):
         except KeyError:
             target_property = destination.add()
 
-        target_property.name = source_property.name
+        target_property.name = prop_name
         target_property.type = source_property.type
 
         visited_keys.add(prop_name)

@@ -4,7 +4,7 @@ from bpy import types, utils
 class RENDER_RT_StateList(types.UIList):
 
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
-        layout.label(item.name, icon="NONE")
+        layout.label(item.netmode, icon="NONE")
 
 
 class RENDER_RT_RPCArgumentList(types.UIList):

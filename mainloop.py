@@ -3,7 +3,6 @@ from network.enums import Netmodes, Roles
 from network.network import NetworkManager
 from network.replicable import Replicable
 from network.replication import Serialisable
-from network.type_serialisers import TypeInfo
 
 from game_system.entity import MeshComponent
 from game_system.fixed_timestep import FixedTimeStepManager, ForcedLoopExit
@@ -22,6 +21,7 @@ from bge import logic, types
 from actors import *
 from messages import *
 
+
 DATA_PATH = "network_data"
 DELIMITER = ","
 
@@ -38,6 +38,13 @@ def safe_for_format(value):
 
 def convert_bpy_enum(value, enum):
     return getattr(enum, value.lower())
+
+
+def eval_bpy_type(type_name):
+    """Convert BPY type enum to type class
+    :param value: enum value
+    """
+    return dict(STRING=str, INT=int, BOOL=bool, FLOAT=float, TIMER=float)[type_name]
 
 
 def string_to_wrapped_int(string, boundary):
@@ -60,7 +67,7 @@ class ReplicableFactory:
         arguments = data['arguments']
         argument_names = sorted(arguments)
 
-        annotated_arguments = ["{}:TypeFlag({})".format(k, arguments[k].__name__) for k in argument_names]
+        annotated_arguments = ["{}: {}".format(k, arguments[k].__name__) for k in argument_names]
         argument_declarations = ", {}".format(','.join(annotated_arguments)) if argument_names else ""
         arguments = "({}{})".format(','.join(argument_names), ',' if argument_names else '')
 
@@ -415,7 +422,7 @@ class Scene(_Scene):
         definition["states"] = {convert_bpy_enum(x, Netmodes): y for x, y in definition["states"].items()}
 
         for function_name, data in definition['rpc_calls'].items():
-            data['arguments'] = {k: convert_bpy_enum(v, Netmodes) for k, v in data['arguments'].items()}
+            data['arguments'] = {k: eval_bpy_type(v) for k, v in data['arguments'].items()}
             data['target'] = convert_bpy_enum(data['target'], Netmodes)
 
         definition['remote_role'] = convert_bpy_enum(definition['remote_role'], Roles)
@@ -478,8 +485,10 @@ class GameLoop(FixedTimeStepManager):
         self.add_replicable_listener('RPC_INVOKE', self._on_invoke_rpc)
         self.add_replicable_listener('CONTROLLER_REASSIGN', self._on_controller_reassign)
         self.add_replicable_listener('SELF_MESSAGE', self._on_self_message)
+
         self.add_scene_listener('SCENE_MESSAGE', self._on_scene_message)
         self.add_scene_listener('CONTROLLER_ASSIGN', self._on_controller_assign)
+
         self.add_global_listener('CONNECT_TO', self._on_connect_to)
 
         # Set network state
@@ -601,6 +610,9 @@ class GameLoop(FixedTimeStepManager):
     @property
     def time_step(self):
         return 1 / logic.getLogicTicRate()
+
+    def post_initialise(self, replication_manager):
+        logic.sendMessage('CREATE_PAWN', '<invalid>')
 
     def check_exit(self):
         # Handle exit

@@ -47,12 +47,15 @@ class SCAActor(_Actor):
     def is_alive(self):
         return not self.game_object.invalid
 
+    @simulated
     def get_property(self, name):
         return self.game_object[name]
 
+    @simulated
     def set_property(self, name, value):
         self.game_object[name] = value
 
+    @simulated
     def receive_prefixed_message(self, prefix, subject):
         """Send message to a specific instance that won't be picked up as a broadcast
 
@@ -62,6 +65,7 @@ class SCAActor(_Actor):
         modified_subject = encode_replicable_info(subject, self)
         self.game_object.sendMessage(prefix + modified_subject, "<invalid>", self.game_object.name)
 
+    @simulated
     def _convert_message_logic(self):
         """Convert message sensors & actuators to use unique subjects
 
@@ -106,6 +110,7 @@ class SCAActor(_Actor):
             name = message_subject[len(prefix):]
             message_handler.subject = prefix + encode_replicable_info(name, self)
 
+    @simulated
     def set_network_states(self, just_initialised=False):
         """Unset any states from other netmodes, then set correct states
         """
@@ -152,6 +157,7 @@ class SCAActor(_Actor):
 
         self.game_object.state = state
 
+    @simulated
     def dispatch_rpc(self, event_name, data):
         arguments = self.rpc_arguments[event_name]
 
@@ -160,6 +166,7 @@ class SCAActor(_Actor):
 
         self.receive_prefixed_message(message_prefixes_replicable['RPC_INVOKE'], event_name)
 
+    @simulated
     def invoke_rpc(self, rpc_name):
         obj = self.game_object
 
