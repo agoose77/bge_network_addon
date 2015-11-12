@@ -137,8 +137,6 @@ def on_template_updated(self, context):
 
     bases = {}
 
-    template_inherits_sca_actor = False
-
     for template_module in obj.modules:
         template_path = template_module.name
 
@@ -158,14 +156,8 @@ def on_template_updated(self, context):
                 cls = getattr(module, template.name)
                 bases[cls] = template
 
-                if template.inherits_from_sca_actor:
-                    template_inherits_sca_actor = True
-
     obj_defaults = obj.template_defaults
     obj_defaults.clear()
-
-    if template_inherits_sca_actor:
-        bases.pop(SCAActor)
 
     try:
         mro = determine_mro(*bases.keys())
@@ -202,27 +194,10 @@ def on_template_updated(self, context):
 class TemplateClass(types.PropertyGroup):
     """PropertyGroup for Template items"""
 
-    name = props.StringProperty(description="Name of template class")
-    active = props.BoolProperty(description="Inherit this template class", update=on_template_updated)
-    required = props.BoolProperty(description="If this template class is required by default")
-    inherits_from_sca_actor = props.BoolProperty()
+    import_path = props.StringProperty(description="Import Path")
 
     defaults = props.CollectionProperty(type=TemplateAttributeDefault)
     defaults_active = props.IntProperty()
 
-    definition_index = props.IntProperty(default=-1)
-
 
 utils.register_class(TemplateClass)
-
-
-class TemplateModule(types.PropertyGroup):
-    """PropertyGroup for Template collections"""
-
-    name = props.StringProperty(name="Template Path", default="", description="Full path of template")
-    loaded = props.BoolProperty(default=False, description="Flag to prevent reloading")
-    templates = props.CollectionProperty(type=TemplateClass)
-    templates_active = props.IntProperty()
-
-
-utils.register_class(TemplateModule)

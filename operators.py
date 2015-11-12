@@ -1,8 +1,6 @@
 from bpy import types, props, utils
 
-from .configuration import DEFAULT_TEMPLATE_MODULES
-from .utilities import get_active_item
-
+from .utilities import unload_template
 
 _check_for_updates = None
 
@@ -44,9 +42,9 @@ class LOGIC_OT_remove_rpc(types.Operator):
         return {'FINISHED'}
 
 
-class LOGIC_OT_add_template_module(types.Operator):
+class LOGIC_OT_add_template_class(types.Operator):
     """Load templates from a module"""
-    bl_idname = "network.add_template_module"
+    bl_idname = "network.set_template_class"
     bl_label = "Add template module"
 
     path = props.StringProperty(name="Path", description="Path to template module")
@@ -60,24 +58,18 @@ class LOGIC_OT_add_template_module(types.Operator):
 
     def execute(self, context):
         obj = context.active_object
-        name = self.path
+        path = self.path
 
-        try:
-            __import__(name, fromlist=[''])
-
-        except (ValueError, ImportError):
-            return {'CANCELLED'}
-
-        module = obj.modules.add()
-        module.name = name
+        template_module = obj.template
+        template_module.import_path = path
 
         return {'FINISHED'}
 
 
-class LOGIC_OT_remove_template_module(types.Operator):
-    """Unload templates from a module"""
-    bl_idname = "network.remove_template_module"
-    bl_label = "Remove template module"
+class LOGIC_OT_remove_template_class(types.Operator):
+    """Unload template from a module"""
+    bl_idname = "network.remove_template_class"
+    bl_label = "Remove template class"
 
     @classmethod
     def poll(cls, context):
@@ -85,10 +77,14 @@ class LOGIC_OT_remove_template_module(types.Operator):
 
     def execute(self, context):
         obj = context.active_object
-        active_template = get_active_item(obj.modules, obj.modules_index)
+        template = obj.template
 
-        if active_template.name not in DEFAULT_TEMPLATE_MODULES:
-            obj.modules.remove(obj.modules_index)
+        template.defaults.clear()
+        template.defaults_active = 0
+
+        unload_template(template.import_path)
+
+        template.import_path = ""
 
         return {'FINISHED'}
 

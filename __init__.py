@@ -50,6 +50,7 @@ from .property_groups import *
 from .configuration import *
 from .operators import *
 from .renderers import *
+from .utilities import type_to_enum_type, get_active_item, load_template
 
 
 active_network_scene = None
@@ -329,45 +330,32 @@ class TemplatesPanel(ObjectSettingsPanel):
 
     @classmethod
     def register(cls):
-        bpy.types.Object.modules_index = bpy.props.IntProperty(default=0)
-        bpy.types.Object.modules = bpy.props.CollectionProperty(name="Templates", type=TemplateModule)
-        bpy.types.Object.template_defaults = bpy.props.CollectionProperty(name="TemplateDefaults",
-                                                                          type=ResolvedTemplateAttributeDefault)
-        bpy.types.Object.templates_defaults_index = bpy.props.IntProperty(default=0)
+        bpy.types.Object.template = bpy.props.PointerProperty(name="Template", type=TemplateClass)
 
     def draw(self, context):
         layout = self.layout
 
         obj = context.object
 
-        rpc_list = layout.row()
-        rpc_list.template_list('RENDER_RT_TemplateGroupList', "Templates", obj, "modules", obj, "modules_index",
-                               rows=3)
-
-        row = rpc_list.column(align=True)
-        row.operator("network.add_template_module", icon='ZOOMIN', text="")
-        row.operator("network.remove_template_module", icon='ZOOMOUT', text="")
-
-        active_template = get_active_item(obj.modules, obj.modules_index)
-        if active_template is None:
-            return
-
+        template = obj.template
         column = layout.column()
-        column.label("Template Classes")
-        column.template_list('RENDER_RT_TemplateList', "TemplateItems", active_template, "templates", active_template,
-                             "templates_active", rows=3)
 
-        if active_template is None:
-            return
+        if template.import_path:
+            row = column.split(0.7)
+            row.label(template.import_path)
+            row.operator("network.set_template_class", text="Replace Template")
+            row.operator("network.remove_template_class", text="", icon='PANEL_CLOSE')
 
-        row = layout.row()
-        row.label("Template Attributes")
+            column.label("Template Attributes")
 
-        layout.template_list('RENDER_RT_TemplateDefaultList', "TemplateItemDefaults", obj, "template_defaults",
-                             obj, "templates_defaults_index", rows=3)
+            layout.template_list('RENDER_RT_TemplateDefaultList', "TemplateItemDefaults", template, "defaults",
+                                 template, "defaults_active", rows=3)
 
-        if not obj.template_defaults:
-            layout.label("Final class could not be built from selected template classes", icon='ERROR')
+            if not template.defaults:
+                layout.label("Final class could not be built from selected template classes", icon='ERROR')
+
+        else:
+            column.operator("network.set_template_class", text="Load Template")
 
 
 class NetworkPanel(bpy.types.Panel):
@@ -446,25 +434,6 @@ def save_state(context):
             templates = set()
             template_indices = {}
 
-            remove_sca_actor = False
-            for module in obj.modules:
-                for template in module.templates:
-                    if not template.active:
-                        continue
-
-                    if template.inherits_from_sca_actor:
-                        remove_sca_actor = True
-
-                    full_path = "{}.{}".format(module.name, template.name)
-                    templates.add(full_path)
-                    template_indices[full_path] = template.definition_index
-
-            if remove_sca_actor:
-                templates.remove(SCA_ACTOR_MODULE)
-
-
-#            templates = {"{}.{}".format(m.name, c.name) for m in obj.modules for c in m.templates if c.active}
-
             data['templates'] = sorted(templates, key=template_indices.__getitem__)
             data['defaults'] = {d.name: getattr(d, d.value_name) for d in obj.template_defaults if d.modified}
             data['states'] = {c.name: {'states': list(c.states), 'simulated_states': list(c.simulated_states)}
@@ -520,7 +489,7 @@ def update_attributes(context):
 
     for rpc_call in obj.rpc_calls:
         copy_logic_properties_to_collection(attributes, rpc_call.arguments,
-                                   lambda prop: attribute_allowed_as_argument(rpc_call, prop))
+                                            lambda prop: attribute_allowed_as_argument(rpc_call, prop))
 
     if not obj.states:
         server = obj.states.add()
@@ -615,78 +584,40 @@ def update_templates(context):
     except (AttributeError, AssertionError):
         return
 
-    for module_path in DEFAULT_TEMPLATE_MODULES:
-        if module_path in obj.modules:
-            continue
+    template = obj.template
 
-        template = obj.modules.add()
-        template.name = module_path
-        print("ADD TEMPLATE", template, module_path)
-
-    template_module = get_active_item(obj.modules, obj.modules_index)
-    if template_module is None:
-        return
-
-    template_path = template_module.name
+    template_path = template.import_path
     if not template_path:
         return
 
-    if template_module.loaded:
+    defaults = template.defaults
+    if defaults:
         return
 
-    try:
-        module = __import__(template_path, fromlist=[''])
+    cls = load_template(template_path)
 
-    except ImportError as err:
-        exception("Failed to load {}: {}".format(template_path, err))
-        return
+    # Store the default attribute values
+    defaults = template.defaults
+    defaults.clear()
 
-    else:
-        info("Loaded {}".format(template_path))
+    template.defaults_active = 0
 
-    templates = template_module.templates
-    templates.clear()
+    ui_types = int, bool, str, float
 
-    required_templates = []
-    for name, value in getmembers(module, is_replicable):
-        if name.startswith("_"):
+    for attribute_name, attribute_value in getmembers(cls):
+        if attribute_name.startswith("_"):
             continue
 
-        if name in HIDDEN_BASES:
+        value_type = type(attribute_value)
+        if value_type not in ui_types:
             continue
 
-        info("Found class {}".format(name))
+        default = defaults.add()
+        default.name = attribute_name
+        default.type = type_to_enum_type(value_type)
 
-        template = templates.add()
-        template.name = name
-        template.inherits_from_sca_actor = issubclass(value, SCAActor)
-
-        if name in DEFAULT_TEMPLATE_MODULES.get(template_path, []):
-            required_templates.append(template)
-
-        # Store the default attribute values
-        defaults = template.defaults
-        ui_types = int, bool, str, float
-
-        for attribute_name, attribute_value in getmembers(value):
-            if attribute_name.startswith("_"):
-                continue
-
-            value_type = type(attribute_value)
-            if value_type not in ui_types:
-                continue
-
-            default = defaults.add()
-            default.name = attribute_name
-            default.type = type_to_enum_type(value_type)
-
-            value_name = default.value_name
-            setattr(default, value_name, attribute_value)
-
-    template_module.loaded = True
-
-    for template in required_templates:
-        template.required = template.active = True
+        value_name = default.value_name
+        setattr(default, value_name, attribute_value)
 
 
 def update_use_network(context):

@@ -59,21 +59,6 @@ class RENDER_RT_RPCList(types.UIList):
         layout.prop(item, "simulated", text="", icon=simulated_icon, emboss=False)
 
 
-class RENDER_RT_TemplateGroupList(types.UIList):
-
-    def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
-        layout.label(icon='FILE_SCRIPT', text=item.name)
-
-
-class RENDER_RT_TemplateList(types.UIList):
-
-    def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
-        layout.label(icon='SCRIPTPLUGINS', text=item.name)
-
-        if not item.required:
-            layout.prop(item, "active", text="")
-
-
 def register():
     utils.register_module(__name__)
 
