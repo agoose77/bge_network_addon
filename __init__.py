@@ -341,9 +341,9 @@ class TemplatesPanel(ObjectSettingsPanel):
         column = layout.column()
 
         if template.import_path:
-            row = column.split(0.7)
+            row = column.split(0.7, align=True)
             row.label(template.import_path)
-            row.operator("network.set_template_class", text="Replace Template")
+            row.operator("network.set_template_class", text="", icon='LOAD_FACTORY')
             row.operator("network.remove_template_class", text="", icon='PANEL_CLOSE')
 
             column.label("Template Attributes")
@@ -355,7 +355,7 @@ class TemplatesPanel(ObjectSettingsPanel):
                 layout.label("Final class could not be built from selected template classes", icon='ERROR')
 
         else:
-            column.operator("network.set_template_class", text="Load Template")
+            column.operator("network.set_template_class", text="Load Template", icon='LOAD_FACTORY')
 
 
 class NetworkPanel(bpy.types.Panel):
@@ -431,11 +431,12 @@ def save_state(context):
                                           'target': r.target, 'reliable': r.reliable,
                                           'simulated': r.simulated} for r in obj.rpc_calls}
 
-            templates = set()
-            template_indices = {}
+            base_import_path = obj.template.import_path
+            if not base_import_path:
+                base_import_path = None
 
-            data['templates'] = sorted(templates, key=template_indices.__getitem__)
-            data['defaults'] = {d.name: getattr(d, d.value_name) for d in obj.template_defaults if d.modified}
+            data['template'] = base_import_path
+            data['defaults'] = {d.name: getattr(d, d.value_name) for d in obj.template.defaults}
             data['states'] = {c.name: {'states': list(c.states), 'simulated_states': list(c.simulated_states)}
                               for c in obj.states}
             data['remote_role'] = obj.remote_role

@@ -135,25 +135,22 @@ def {name}(self{args}) -> {returns}:
         return "{} = Serialisable({}, notify_on_replicated=True)".format(name, default)
 
     @classmethod
-    def parse_bases(cls, base_paths):
-        namespace = OrderedDict()
-        for class_path in base_paths:
-            *module_path, class_name = class_path.split(".")
-            try:
-                module = __import__('.'.join(module_path), fromlist=[''])
-            except ImportError as err:
-                raise ImportError("Couldn't import template: {}".format(class_path)) from err
+    def load_base_class(cls, base_class_path):
+        *module_path, class_name = base_class_path.split(".")
 
-            try:
-                new_cls = getattr(module, class_name)
+        try:
+            module = __import__('.'.join(module_path), fromlist=[''])
+        except ImportError as err:
+            raise ImportError("Couldn't import template: {}".format(base_class_path)) from err
 
-            except AttributeError as err:
-                raise AttributeError("Template module {}.py has no class {}".format(module.__name__, class_name)) \
-                    from err
+        try:
+            new_cls = getattr(module, class_name)
 
-            namespace[class_name] = new_cls
+        except AttributeError as err:
+            raise AttributeError("Template module {}.py has no class {}".format(module.__name__, class_name)) \
+                from err
 
-        return namespace
+        return new_cls
 
     @classmethod
     def from_configuration(cls, raw_name, configuration):
@@ -165,7 +162,6 @@ def {name}(self{args}) -> {returns}:
         name = raw_name.replace(".", "_")
         assert name.isidentifier()
 
-        base_namespaces = cls.parse_bases(configuration['templates'])
         class_lines = ["mesh = MeshComponent('{}')".format(raw_name)]
 
         attributes = configuration['attributes']
@@ -194,12 +190,21 @@ def {name}(self{args}) -> {returns}:
                             for name, value in default_values.items()])
 
         class_body = "\n    ".join(class_lines)
-        bases_string = ", ".join(base_namespaces.keys())
-        class_declaration = "class {}({}):\n    ".format(name, bases_string) + class_body
+
+        base_class_import_path = configuration['template']
+        if base_class_import_path is None:
+            base_name = "SCAActor"
+            namespace = {}
+        else:
+            base_class = cls.load_base_class(base_class_path=configuration['template'])
+            base_name = base_class.__name__
+            namespace = {base_name: base_class}
+
+        class_declaration = "class {}({}):\n    ".format(name, base_name) + class_body
 
         print(class_declaration)
-        exec(class_declaration, globals(), base_namespaces)
-        return base_namespaces[name]
+        exec(class_declaration, globals(), namespace)
+        return namespace[name]
 
 
 class ControllerManager:

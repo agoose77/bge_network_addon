@@ -1,5 +1,4 @@
 from contextlib import contextmanager
-from bpy import types
 from inspect import isclass
 import sys
 
@@ -114,7 +113,6 @@ def determine_mro(*bases):
 
 def get_bpy_enum(enum):
     enum_name = enum.__name__.rstrip("s").lower()
-    print(list(enum))
     return [(x.upper(), x.replace('_', ' ').title(), "{} {}".format(x.capitalize(), enum_name), 'BLANK1', v)
             for x, v in enum]
 

@@ -94,42 +94,6 @@ class TemplateAttributeDefault(types.PropertyGroup):
 utils.register_class(TemplateAttributeDefault)
 
 
-class ResolvedTemplateAttributeDefault(types.PropertyGroup):
-
-    @property
-    def hash(self):
-        return str(hash(getattr(self, self.value_name)))
-
-    @property
-    def value_name(self):
-        return "value_{}".format(self.type.lower())
-
-    @property
-    def value(self):
-        return getattr(self, self.value_name)
-
-    @value.setter
-    def value(self, value):
-        setattr(self, self.value_name, value)
-
-    @property
-    def modified(self):
-        return self.hash != self.original_hash
-
-    original_hash = props.StringProperty()
-    name = props.StringProperty(description="Name of resolved template attribute default value")
-    type = props.EnumProperty(description="Data type of resolved template attribute default value",
-                              items=TYPE_ENUMS)
-
-    value_int = props.IntProperty()
-    value_float = props.FloatProperty()
-    value_string = props.StringProperty()
-    value_bool = props.BoolProperty()
-
-
-utils.register_class(ResolvedTemplateAttributeDefault)
-
-
 def on_template_updated(self, context):
     obj = context.object
     if not obj:
