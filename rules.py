@@ -3,11 +3,11 @@ from network.replicable import Replicable
 from game_system.replicables import PawnController, PlayerPawnController, ReplicationInfo
 from game_system.entity import Actor
 
-from controllers import IRCChatController
+from bge import logic
 
 
 class Rules:
-    
+
     def pre_initialise(self, connection_info):
         return
     
@@ -15,11 +15,11 @@ class Rules:
     #     replicable.deregister()
     
     def post_initialise(self, replication_manager):
-        cont = IRCChatController()
-        ControllerPendingAssignmentSignal.invoke(cont)
-        return cont
+        # Ask for a pawn to be spawned
+        logic.game.receive_identified_message("CREATE_PAWN")
+        # TODO add support for changing type of controller?
             
-    def is_relevant(self, connection, replicable):
+    def is_relevant(self, replication_manager, replicable):
         if isinstance(replicable, PawnController):
             return False
         

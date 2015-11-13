@@ -35,7 +35,6 @@ class SCAActor(_Actor):
         super().on_replicated(name)
 
         if name == "roles":
-            print("ROELS")
             self.set_network_states()
 
         if name in self.property_names:

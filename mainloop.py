@@ -21,6 +21,7 @@ from weakref import ref
 from bge import logic, types
 from actors import *
 from messages import *
+from rules import Rules
 
 
 DATA_PATH = "network_data"
@@ -442,8 +443,14 @@ class GameLoop(FixedTimeStepManager):
         self.world = World(netmode, logic.getLogicTicRate(), file_path)
         logic.world = self.world
 
-        self.network_manager = NetworkManager(self.world, "",
-                                              (world_settings['port'] if netmode==Netmodes.server else 0))
+        if netmode == Netmodes.server:
+            port = world_settings['port']
+            self.world.rules = Rules()
+
+        else:
+            port = 0
+
+        self.network_manager = NetworkManager(self.world, "", port)
 
         # Time since last sent
         self.time_since_sent = 0.0
@@ -475,6 +482,10 @@ class GameLoop(FixedTimeStepManager):
     def push_network_message(self, message):
         self._messages.append(message)
         print("push", message)
+
+    def receive_identified_message(self, identifier, subject=""):
+        encoded_subject = encode_subject(identifier, subject)
+        logic.sendMessage(encoded_subject)
 
     def _process_messages(self):
         # TODO pre-extract prefixes in SCENE/replicable setup
@@ -583,9 +594,6 @@ class GameLoop(FixedTimeStepManager):
     @property
     def time_step(self):
         return 1 / logic.getLogicTicRate()
-
-    def post_initialise(self, replication_manager):
-        logic.sendMessage(encode_subject('CREATE_PAWN'))
 
     def check_exit(self):
         # Handle exit
@@ -704,7 +712,7 @@ def get_actuators(obj):
 
 def main():
     game_loop = GameLoop()
-    logic.game_loop = game_loop
+    logic.game = game_loop
     game_loop.run()
 
 
@@ -715,7 +723,7 @@ def activate_actuator(cont, actuator):
         return
 
     # TODO what about safe messages??
-    logic.game_loop.push_network_message(actuator.subject)
+    logic.game.push_network_message(actuator.subject)
 
 
 def deactivate_actuator(cont, actuator):
