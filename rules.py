@@ -16,8 +16,7 @@ class Rules:
     
     def post_initialise(self, replication_manager):
         # Ask for a pawn to be spawned
-        logic.game.receive_identified_message("CREATE_PAWN")
-        # TODO add support for changing type of controller?
+        logic.game.create_new_player(replication_manager)
             
     def is_relevant(self, replication_manager, replicable):
         if isinstance(replicable, PawnController):

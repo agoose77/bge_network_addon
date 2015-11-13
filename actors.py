@@ -1,4 +1,5 @@
-from game_system.entity import Actor as _Actor
+#from game_system.entity import
+from game_system.replicables import PawnController, Pawn
 
 from messages import *
 
@@ -8,7 +9,11 @@ from network.enums import Netmodes, Roles
 from functools import partial
 
 
-class SCAActor(_Actor):
+class SCAPlayerPawnController(PawnController):
+    pass
+
+
+class SCAActor(Pawn):
     """Interface for SCA_ system with network system"""
 
     property_names = set()
@@ -55,14 +60,14 @@ class SCAActor(_Actor):
         self.game_object[name] = value
 
     @simulated
-    def receive_identified_message(self, prefix, subject):
+    def receive_identified_message(self, identifier, subject):
         """Send message to a specific instance that won't be picked up as a broadcast
 
         :param prefix: prefix of subject
         :param subject: subject of message
         """
         modified_subject = encode_replicable_info(subject, self)
-        self.game_object.sendMessage(prefix + modified_subject, "<invalid>", self.game_object.name)
+        self.game_object.sendMessage(encode_subject(identifier, modified_subject), self.game_object.name)
 
     @simulated
     def _convert_message_logic(self):

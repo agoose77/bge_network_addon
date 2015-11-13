@@ -120,8 +120,8 @@ def {name}(self{args}) -> {returns}:
                     body_statements.append("yield '{}'".format(attr_name))
 
         yield_body = "\n    ".join(body_statements)
-        return """def can_replicable(self, is_owner, is_initial):\n"""\
-               """    yield from super().can_replicable(is_owner, is_initial)\n    {}""".format(yield_body)
+        return """def can_replicate(self, is_owner, is_initial):\n"""\
+               """    yield from super().can_replicate(is_owner, is_initial)\n    {}""".format(yield_body)
 
     @classmethod
     def create_attribute_string(cls, name, data, is_raw=False):
@@ -207,24 +207,13 @@ def {name}(self{args}) -> {returns}:
 class ControllerManager:
 
     def __init__(self, scene):
-        self.pending_controllers = deque()
         self._instigator_to_pawn = {}
+
         self.scene = scene
-
-    @staticmethod
-    def request_assignment():
-        encoded_subject = encode_subject("CONTROLLER_REQUEST")
-        logic.sendMessage(encoded_subject)
-
-    def on_new_controller(self, controller):
-        self.pending_controllers.append(controller)
-
-        # Assume no code will listen for multiple messages
-        self.request_assignment()
 
     def on_reassigned_pawn(self, old_pawn, replicable_class_name):
         try:
-            replicable_cls = Replicable[replicable_class_name]
+            replicable_cls = Replicable.subclasses[replicable_class_name]
 
         except KeyError:
             print("Controller pawn assignment requires valid object name, not {}".format(replicable_class_name))
@@ -242,20 +231,23 @@ class ControllerManager:
         # We know old pawn has game object
         bge_obj = old_pawn.game_object
 
-        self._assign_new_pawn(controller, bge_obj, replicable_cls)
+        self._assign_new_pawn(bge_obj, controller, replicable_cls)
 
         # Remove old pawn
         self.scene.remove_replicable(old_pawn)
 
     def on_assigned_pawn(self, bge_obj, replicable_class_name):
-        controller = self.pending_controllers.popleft()
-        replicable_cls = Replicable[replicable_class_name]
+        replicable_cls = Replicable.subclasses[replicable_class_name]
 
-        self._assign_new_pawn(controller, bge_obj, replicable_cls)
+        controller = self.scene.add_replicable(SCAPlayerPawnController)
+        replication_manager = self.scene.get_pending_connection_info()
 
-        # If still waiting, trigger controller
-        if self.pending_controllers:
-            self.request_assignment()
+        replication_manager.set_root_for_scene(self.scene, controller)
+
+        # Create and move pawn to creator!
+        pawn = self._assign_new_pawn(bge_obj, controller, replicable_cls)
+        pawn.transform.world_position = bge_obj.worldPosition
+        pawn.transform.world_orientation = bge_obj.worldOrientation.to_quaternion()
 
     def send_to_new_pawn(self, instigator, message):
         pawn = self._instigator_to_pawn[instigator]
@@ -264,6 +256,7 @@ class ControllerManager:
     def _assign_new_pawn(self, instigator, controller, replicable_cls):
         pawn = self.scene.add_replicable(replicable_cls)
         controller.take_control(pawn)
+        pawn.owner = controller
 
         # Remember who created this pawn
         self._instigator_to_pawn[instigator] = pawn
@@ -296,12 +289,6 @@ class EntityBuilder(_EntityBuilder):
 
         return obj
 
-    def unload_entity(self, entity):
-        obj = self.entity_to_game_obj[entity]
-        del obj["_entity"]
-
-        super().unload_entity(entity)
-
 
 class Scene(_Scene):
 
@@ -311,10 +298,15 @@ class Scene(_Scene):
         self.entity_builder = EntityBuilder(self.bge_scene)
         self.entity_classes = {}
 
-        self.controller_manager = ControllerManager(self)
+        if world.netmode == Netmodes.server:
+            self.controller_manager = ControllerManager(self)
+        else:
+            self.controller_manager = None
 
         self._load_configuration_files()
         self._convert_scene_message_logic()
+
+        self.get_pending_connection_info = None
 
     def cull_invalid_objects(self):
         to_remove = []
@@ -419,12 +411,13 @@ class GameLoop(FixedTimeStepManager):
 
         self.world = None
 
-        self.listeners = {}
+        self._listeners = {}
+        self._listeners['SET_NETMODE'] = self._on_set_netmode
+
         self._messages = []
-
-        self.listeners['SET_NETMODE'] = self._on_set_netmode
-
         self._converted_scenes = set()
+
+        self._pending_replication_managers = deque()
 
     def set_netmode(self, netmode):
         # Load configuration
@@ -459,15 +452,15 @@ class GameLoop(FixedTimeStepManager):
         self.on_step = self.step_network
         self.cleanup = lambda: self.network_manager.stop()
 
-        self.listeners['METHOD_INVOKE'] = self._on_invoke_method
-        self.listeners['RPC_INVOKE'] = self._on_invoke_rpc
-        self.listeners['CONTROLLER_REASSIGN'] = self._on_controller_reassign
-        self.listeners['SELF_MESSAGE'] = self._on_self_message
+        self._listeners['METHOD_INVOKE'] = self._on_invoke_method
+        self._listeners['RPC_INVOKE'] = self._on_invoke_rpc
+        self._listeners['PAWN_REASSOCIATE'] = self._on_controller_reassign
+        self._listeners['SELF_MESSAGE'] = self._on_self_message
 
-        self.listeners['SCENE_MESSAGE'] = self._on_scene_message
-        self.listeners['CONTROLLER_ASSIGN'] = self._on_controller_assign
+        self._listeners['SCENE_MESSAGE'] = self._on_scene_message
+        self._listeners['PAWN_ASSOCIATE'] = self._on_controller_assign
 
-        self.listeners['CONNECT_TO'] = self._on_connect_to
+        self._listeners['CONNECT_TO'] = self._on_connect_to
 
         # Set network state
         self._update_network_state()
@@ -477,22 +470,26 @@ class GameLoop(FixedTimeStepManager):
         print("Network started")
 
     def add_listener(self, name, func):
-        self.listeners[name].append(func)
+        self._listeners[name].append(func)
 
     def push_network_message(self, message):
         self._messages.append(message)
         print("push", message)
 
-    def receive_identified_message(self, identifier, subject=""):
+    def send_global_message(self, identifier, subject=""):
         encoded_subject = encode_subject(identifier, subject)
         logic.sendMessage(encoded_subject)
+
+    def create_new_player(self, replication_manager):
+        self._pending_replication_managers.append(replication_manager)
+        self.send_global_message("REQUEST_PAWN")
 
     def _process_messages(self):
         # TODO pre-extract prefixes in SCENE/replicable setup
         messages = self._messages[:]
         self._messages.clear()
 
-        listeners = self.listeners
+        listeners = self._listeners
         world = self.world
 
         # Lower priority
@@ -515,9 +512,13 @@ class GameLoop(FixedTimeStepManager):
                 request, scene = decode_scene_info(world, encoded_scene_info)
                 non_global_messages.append(partial(listener, scene, obj, request))
 
-           # Replicable message
+            # Replicable message
             else:
-                request, replicable = decode_replicable_info(world, subject)
+                try:
+                    request, replicable = decode_replicable_info(world, subject)
+                except ValueError:
+                    continue
+
                 non_global_messages.append(partial(listener, replicable, request))
 
         for listener in non_global_messages:
@@ -591,6 +592,50 @@ class GameLoop(FixedTimeStepManager):
     def _on_new_pawn(self, replicable, message_name):
         replicable.scene.controller_manager.send_to_new_pawn(replicable, message_name)
 
+    def _get_pending_connection_info(self):
+        return self._pending_replication_managers.popleft()
+
+    def _update_network_state(self):
+        # Initialise network objects if they're added
+        for bge_scene in logic.getSceneList():
+            scene_name = bge_scene.name
+
+            # Initialise scene if it doesn't exist
+            try:
+                scene = self.world.scenes[scene_name]
+
+            except KeyError:
+                scene = self.world.add_scene(scene_name)
+                scene.get_pending_connection_info = self._get_pending_connection_info
+
+            to_create_dynamic = []
+            to_create_static = []
+
+            for obj in bge_scene.objects:
+                if "_entity" in obj:
+                    continue
+
+                obj_name = obj.name
+                if obj_name in scene.entity_classes:
+                    if obj_name in bge_scene.objectsInactive:
+                        to_create_dynamic.append(obj_name)
+
+                    else:
+                        to_create_static.append(obj_name)
+
+            # Create static replicables
+            to_create_static.sort()
+
+            for i, new_obj_name in enumerate(to_create_static):
+                replicable_cls = scene.entity_classes[new_obj_name]
+                scene.add_replicable(replicable_cls, unique_id=i)
+
+            for new_obj_name in to_create_dynamic:
+                replicable_cls = scene.entity_classes[new_obj_name]
+                scene.add_replicable(replicable_cls)
+
+            scene.cull_invalid_objects()
+
     @property
     def time_step(self):
         return 1 / logic.getLogicTicRate()
@@ -626,46 +671,6 @@ class GameLoop(FixedTimeStepManager):
 
         # Check if exit is required
         self.check_exit()
-
-    def _update_network_state(self):
-        # Initialise network objects if they're added
-        for bge_scene in logic.getSceneList():
-            scene_name = bge_scene.name
-
-            # Initialise scene if it doesn't exist
-            try:
-                scene = self.world.scenes[scene_name]
-
-            except KeyError:
-                scene = self.world.add_scene(scene_name)
-
-            to_create_dynamic = []
-            to_create_static = []
-
-            for obj in bge_scene.objects:
-                if "_entity" in obj:
-                    continue
-
-                obj_name = obj.name
-                if obj_name in scene.entity_classes:
-                    if obj_name in bge_scene.objectsInactive:
-                        to_create_dynamic.append(obj_name)
-
-                    else:
-                        to_create_static.append(obj_name)
-
-            # Create static replicables
-            to_create_static.sort()
-
-            for i, new_obj_name in enumerate(to_create_static):
-                replicable_cls = scene.entity_classes[new_obj_name]
-                scene.add_replicable(replicable_cls, unique_id=i)
-
-            for new_obj_name in to_create_dynamic:
-                replicable_cls = scene.entity_classes[new_obj_name]
-                scene.add_replicable(replicable_cls)
-
-            scene.cull_invalid_objects()
 
     def step_network(self, delta_time):
         self.time_since_sent += delta_time

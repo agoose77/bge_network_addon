@@ -5,7 +5,7 @@ message_subjects = dict(CONTROLLER_REQUEST="CONTROLLER_REQUEST")
 
 # Prefixes for messages associated with replicables
 message_prefixes_replicable = dict(
-    CONTROLLER_REASSIGN="CHANGE_PAWN::",
+    PAWN_REASSOCIATE="CHANGE_PAWN::",
 
     RPC_INVOKE="@",
     NOTIFICATION="!",
@@ -17,12 +17,13 @@ message_prefixes_replicable = dict(
 
 message_prefixes_global = dict(
     SET_NETMODE="NETMODE=",
-    CONNECT_TO="CONNECT->"
+    CONNECT_TO="CONNECT->",
+    REQUEST_PAWN="PAWN?"
     )
 
 message_prefixes_scene = dict(
     SCENE_MESSAGE="SCENE->",
-    CONTROLLER_ASSIGN="NEW_PAWN=",
+    PAWN_ASSOCIATE="NEW_PAWN=",
 )
 
 
@@ -120,6 +121,10 @@ def decode_replicable_info(world, encoded_subject):
     subject, scene_id, replicable_id = loads(encoded_subject)
 
     scene = world.scenes[scene_id]
-    replicable = scene.replicables[replicable_id]
+    try:
+        replicable = scene.replicables[replicable_id]
+
+    except KeyError:
+        raise ValueError("Replicable does not exist")
 
     return subject, replicable
