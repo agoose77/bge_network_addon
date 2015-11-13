@@ -52,10 +52,10 @@ class RENDER_RT_RPCList(types.UIList):
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
         layout.prop(item, "name", text="", emboss=False)
 
-        reliable_icon = 'LIBRARY_DATA_DIRECT' if item.reliable else 'LIBRARY_DATA_INDIRECT'
+        reliable_icon = 'DRIVER' if item.reliable else 'RADIO'
         layout.prop(item, "reliable", text="", icon=reliable_icon, emboss=False)
 
-        simulated_icon = 'SOLO_ON' if item.simulated else 'SOLO_OFF'
+        simulated_icon = 'UNLOCKED' if item.simulated else 'LOCKED'
         layout.prop(item, "simulated", text="", icon=simulated_icon, emboss=False)
 
 

@@ -38,7 +38,6 @@ def unload_template(path):
         info[1] -= 1
 
         if not info[1]:
-            print("ULOADE", info[0])
             for mod_name in info[0]:
                 sys.modules.pop(mod_name)
 

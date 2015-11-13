@@ -186,9 +186,8 @@ class RPCPanel(ObjectSettingsPanel):
         rpc_data.label("Info", icon='INFO')
         rpc_data.prop(active_rpc, 'name')
         rpc_data.prop(active_rpc, 'target')
-        rpc_data.prop(active_rpc, 'reliable', icon='LIBRARY_DATA_DIRECT' if active_rpc.reliable else
-                      'LIBRARY_DATA_INDIRECT')
-        rpc_data.prop(active_rpc, 'simulated', icon='PMARKER_SEL' if active_rpc.simulated else 'PMARKER')
+        rpc_data.prop(active_rpc, 'reliable', icon='DRIVER' if active_rpc.reliable else 'RADIO')
+        rpc_data.prop(active_rpc, 'simulated', icon='UNLOCKED' if active_rpc.simulated else 'LOCKED')
 
         rpc_args = rpc_settings.column()
         rpc_args.label("Arguments", icon='SETTINGS')
@@ -267,10 +266,10 @@ class StatesPanel(ObjectSettingsPanel):
 
             if is_client:
                 if network_role in no_states:
-                    return 'CANCEL'
+                    return 'PINNED'
 
                 if network_role == 'SIMULATED_PROXY' and not is_simulated:
-                    return 'CANCEL'
+                    return 'SAVE_AS'
 
                 if network_role == 'AUTONOMOUS_PROXY':
                     if not is_simulated:
