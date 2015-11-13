@@ -1,4 +1,4 @@
-from network.annotations.decorators import reliable, simulated, get_annotation, set_annotation, requires_permission
+from network.annotations.decorators import reliable, simulated, requires_permission
 from network.enums import Netmodes, Roles
 from network.network import NetworkManager
 from network.replicable import Replicable
@@ -12,7 +12,7 @@ from bge_game_system.entity.builder import EntityBuilder as _EntityBuilder
 from bge_game_system.world import World as _World
 from bge_game_system.scene import Scene as _Scene
 
-from collections import defaultdict, OrderedDict, deque
+from collections import defaultdict, deque
 from functools import partial
 from json import load
 from os import path
@@ -24,10 +24,6 @@ from messages import *
 
 
 DATA_PATH = "network_data"
-DELIMITER = ","
-
-prefix_listener = lambda value: set_annotation("message_prefix")(value)
-get_prefix_listener = lambda value: get_annotation("message_prefix")(value)
 
 
 def safe_for_format(value):
@@ -46,14 +42,6 @@ def eval_bpy_type(type_name):
     :param value: enum value
     """
     return dict(STRING=str, INT=int, BOOL=bool, FLOAT=float, TIMER=float)[type_name]
-
-
-def string_to_wrapped_int(string, boundary):
-    value = 0
-
-    for char in string:
-        value = (value * 0x110000) + ord(char)
-    return value % boundary
 
 
 class ReplicableFactory:
@@ -224,7 +212,8 @@ class ControllerManager:
 
     @staticmethod
     def request_assignment():
-        logic.sendMessage(message_subjects['CONTROLLER_REQUEST'], '<internal>')
+        encoded_subject = encode_subject("CONTROLLER_REQUEST")
+        logic.sendMessage(encoded_subject)
 
     def on_new_controller(self, controller):
         self.pending_controllers.append(controller)
@@ -269,7 +258,7 @@ class ControllerManager:
 
     def send_to_new_pawn(self, instigator, message):
         pawn = self._instigator_to_pawn[instigator]
-        pawn.receive_prefixed_message(message_prefixes_replicable['SELF_MESSAGE'], message)
+        pawn.receive_identified_message('SELF_MESSAGE', message)
 
     def _assign_new_pawn(self, instigator, controller, replicable_cls):
         pawn = self.scene.add_replicable(replicable_cls)
@@ -324,7 +313,7 @@ class Scene(_Scene):
         self.controller_manager = ControllerManager(self)
 
         self._load_configuration_files()
-        self._convert_message_logic()
+        self._convert_scene_message_logic()
 
     def cull_invalid_objects(self):
         to_remove = []
@@ -335,7 +324,7 @@ class Scene(_Scene):
         for entity in to_remove:
             self.remove_replicable(entity)
 
-    def _convert_message_logic(self):
+    def _convert_scene_message_logic(self):
         objects = list(self.bge_scene.objects)
         objects.extend(self.bge_scene.objectsInactive)
 
@@ -343,52 +332,31 @@ class Scene(_Scene):
             self._convert_object_message_logic(obj)
 
     def _convert_object_message_logic(self, obj):
-        from bge import types
-
-        message_scene = message_prefixes_scene["SCENE_MESSAGE"]
-
+        """Convert logic bricks which use SCENE message API"""
         # Convert sensors
-        sensors = [s for s in obj.sensors if isinstance(s, types.KX_NetworkMessageSensor)]
-        for message_handler in sensors:
-            message_subject = message_handler.subject
-
-            for prefix in message_prefixes_scene.values():
-                if message_subject.startswith(prefix):
-                    break
-
-            else:
-                continue
-
-            name = message_subject[len(prefix):]
-            message_handler.subject = prefix + encode_scene_info(name, self)
-
+        def get_subject(identifier, request):
             # Subscribe to messages
-            if prefix == message_scene:
-                self.messenger.add_subscriber(name, partial(self.receive_prefixed_message, prefix, name))
+            if identifier == 'SCENE_MESSAGE':
+                send_to_bge = partial(self.receive_identified_message, identifier, request)
+                self.messenger.add_subscriber(request, send_to_bge)
+
+            return encode_scene_info(request, self)
+
+        convert_object_message_logic(get_sensors(obj), message_prefixes_scene, get_subject)
 
         # Convert actuators
-        actuators = [c for c in obj.actuators if isinstance(c, types.KX_NetworkMessageActuator)]
-        for message_handler in actuators:
-            message_subject = message_handler.subject
+        get_subject = lambda identifier, request: encode_object(encode_scene_info(request, self), obj)
+        convert_object_message_logic(get_actuators(obj), message_prefixes_scene, get_subject)
 
-            for prefix in message_prefixes_scene.values():
-                if message_subject.startswith(prefix):
-                    break
-
-            else:
-                continue
-
-            name = message_subject[len(prefix):]
-            message_handler.subject = prefix + encode_object(encode_scene_info(name, self), obj)
-
-    def receive_prefixed_message(self, prefix, subject):
+    def receive_identified_message(self, identifier, subject):
         """Send message to a specific instance that won't be picked up as a broadcast
 
         :param prefix: prefix of subject
         :param subject: subject of message
         """
-        modified_subject = encode_scene_info(subject, self)
-        logic.sendMessage(prefix + modified_subject)
+        encoded_scene_info = encode_scene_info(subject, self)
+        encoded_subject = encode_subject(identifier, encoded_scene_info)
+        logic.sendMessage(encoded_subject)
 
     def _load_configuration_files(self):
         bge_scene = self.bge_scene
@@ -450,10 +418,12 @@ class GameLoop(FixedTimeStepManager):
 
         self.world = None
 
-        self.listeners = defaultdict(list)
+        self.listeners = {}
         self._messages = []
 
-        self.add_global_listener('SET_NETMODE', self._on_set_netmode)
+        self.listeners['SET_NETMODE'] = self._on_set_netmode
+
+        self._converted_scenes = set()
 
     def set_netmode(self, netmode):
         # Load configuration
@@ -482,79 +452,84 @@ class GameLoop(FixedTimeStepManager):
         self.on_step = self.step_network
         self.cleanup = lambda: self.network_manager.stop()
 
-        self.add_replicable_listener('METHOD_INVOKE', self._on_invoke_method)
-        self.add_replicable_listener('RPC_INVOKE', self._on_invoke_rpc)
-        self.add_replicable_listener('CONTROLLER_REASSIGN', self._on_controller_reassign)
-        self.add_replicable_listener('SELF_MESSAGE', self._on_self_message)
+        self.listeners['METHOD_INVOKE'] = self._on_invoke_method
+        self.listeners['RPC_INVOKE'] = self._on_invoke_rpc
+        self.listeners['CONTROLLER_REASSIGN'] = self._on_controller_reassign
+        self.listeners['SELF_MESSAGE'] = self._on_self_message
 
-        self.add_scene_listener('SCENE_MESSAGE', self._on_scene_message)
-        self.add_scene_listener('CONTROLLER_ASSIGN', self._on_controller_assign)
+        self.listeners['SCENE_MESSAGE'] = self._on_scene_message
+        self.listeners['CONTROLLER_ASSIGN'] = self._on_controller_assign
 
-        self.add_global_listener('CONNECT_TO', self._on_connect_to)
+        self.listeners['CONNECT_TO'] = self._on_connect_to
 
         # Set network state
         self._update_network_state()
 
-        logic.sendMessage("NETWORK_INIT")
+        logic.sendMessage(encode_subject("NETWORK_INIT"))
 
         print("Network started")
 
-    def add_replicable_listener(self, name, func):
-        prefix = message_prefixes_replicable[name]
-        self.listeners[prefix].append(func)
+    def add_listener(self, name, func):
+        self.listeners[name].append(func)
 
-    def add_scene_listener(self, name, func):
-        prefix = message_prefixes_scene[name]
-        self.listeners[prefix].append(func)
-
-    def add_global_listener(self, name, func):
-        prefix = message_prefixes_global[name]
-        self.listeners[prefix].append(func)
-
-    def push_network_message(self, messages):
-        self._messages.append(messages)
+    def push_network_message(self, message):
+        self._messages.append(message)
+        print("push", message)
 
     def _process_messages(self):
         # TODO pre-extract prefixes in SCENE/replicable setup
         messages = self._messages[:]
         self._messages.clear()
 
-        prefix_listeners = self.listeners
+        listeners = self.listeners
         world = self.world
-
-        global_prefixes = set(message_prefixes_global.values())
-        replicable_prefixes = set(message_prefixes_replicable.values())
 
         # Lower priority
         non_global_messages = []
 
-        for subject in messages:
-            starts_with = subject.startswith
+        for encoded_subject in messages:
+            try:
+                identifier, subject = decode_subject(encoded_subject)
 
-            for prefix, listeners in prefix_listeners.copy().items():
-                if starts_with(prefix):
-                    following_prefix = subject[len(prefix):]
+            except ValueError:
+                continue
 
-                    if prefix in global_prefixes:
-                        for listener in listeners:
-                            listener(following_prefix)
+            listener = listeners[identifier]
 
-                    elif prefix in replicable_prefixes:
-                        subject, replicable = decode_replicable_info(world, following_prefix)
+            if identifier in message_prefixes_global:
+                listener(subject)
 
-                        non_global_messages.append((listeners, (replicable, subject)))
+            elif identifier in message_prefixes_scene:
+                encoded_scene_info, obj = decode_object(subject)
+                request, scene = decode_scene_info(world, encoded_scene_info)
+                non_global_messages.append(partial(listener, scene, obj, request))
 
-                    # Scene message
-                    else:
-                        encoded_scene_info, obj = decode_object(following_prefix)
+           # Replicable message
+            else:
+                request, replicable = decode_replicable_info(world, subject)
+                non_global_messages.append(partial(listener, replicable, request))
 
-                        subject, scene = decode_scene_info(world, encoded_scene_info)
+        for listener in non_global_messages:
+            listener()
 
-                        non_global_messages.append((listeners, (scene, obj, subject)))
+    def _convert_game_global_message_logic(self):
+        """Convert all global messages in scene"""
+        for scene in logic.getSceneList():
+            if not id(scene) in self._converted_scenes:
+                self._convert_scene_global_message_logic(scene)
+                self._converted_scenes.add(id(scene))
 
-        for listeners, args in non_global_messages:
-            for listener in listeners:
-                listener(*args)
+    def _convert_scene_global_message_logic(self, scene):
+        """Convert logic bricks which use GLOBAL message API"""
+        objects = list(scene.objects)
+        objects.extend(scene.objectsInactive)
+
+        for obj in objects:
+            # Convert sensors
+            convert_object_message_logic(get_sensors(obj), message_prefixes_global)
+
+            # Convert actuators
+            convert_object_message_logic(get_actuators(obj), message_prefixes_global)
 
     def _on_connect_to(self, target):
         ip_address, port = target.split("::")
@@ -610,7 +585,7 @@ class GameLoop(FixedTimeStepManager):
         return 1 / logic.getLogicTicRate()
 
     def post_initialise(self, replication_manager):
-        logic.sendMessage('CREATE_PAWN')
+        logic.sendMessage(encode_subject('CREATE_PAWN'))
 
     def check_exit(self):
         # Handle exit
@@ -634,6 +609,8 @@ class GameLoop(FixedTimeStepManager):
                 timeout.on_elapsed = quit_game
 
     def step_default(self, delta_time):
+        self._convert_game_global_message_logic()
+
         logic.NextFrame()
 
         # Process received messages from logic.NextFrame()
@@ -687,6 +664,8 @@ class GameLoop(FixedTimeStepManager):
 
         self.network_manager.receive()
 
+        self._convert_game_global_message_logic()
+
         # Update BGE gameloop
         logic.NextFrame()
 
@@ -714,6 +693,15 @@ class GameLoop(FixedTimeStepManager):
         self.check_exit()
 
 
+# Helper functions
+def get_sensors(obj):
+    return [s for s in obj.sensors if isinstance(s, types.KX_NetworkMessageSensor)]
+
+
+def get_actuators(obj):
+    return [a for a in obj.actuators if isinstance(a, types.KX_NetworkMessageActuator)]
+
+
 def main():
     game_loop = GameLoop()
     logic.game_loop = game_loop
@@ -726,6 +714,7 @@ def activate_actuator(cont, actuator):
         cont.activate(actuator)
         return
 
+    # TODO what about safe messages??
     logic.game_loop.push_network_message(actuator.subject)
 
 

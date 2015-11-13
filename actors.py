@@ -41,7 +41,7 @@ class SCAActor(_Actor):
         if name in self.property_names:
             self.set_property(name, getattr(self, name))
 
-        self.receive_prefixed_message(message_prefixes_replicable['NOTIFICATION'], name)
+        self.receive_identified_message('NOTIFICATION', name)
 
     @property
     def is_alive(self):
@@ -56,7 +56,7 @@ class SCAActor(_Actor):
         self.game_object[name] = value
 
     @simulated
-    def receive_prefixed_message(self, prefix, subject):
+    def receive_identified_message(self, prefix, subject):
         """Send message to a specific instance that won't be picked up as a broadcast
 
         :param prefix: prefix of subject
@@ -74,41 +74,24 @@ class SCAActor(_Actor):
         """
         from bge import types
 
-        message_self = message_prefixes_replicable["SELF_MESSAGE"]
+        obj = self.game_object
 
         # Convert sensors
-        sensors = [s for s in self.game_object.sensors if isinstance(s, types.KX_NetworkMessageSensor)]
-        for message_handler in sensors:
-            message_subject = message_handler.subject
-
-            for prefix in message_prefixes_replicable.values():
-                if message_subject.startswith(prefix):
-                    break
-
-            else:
-                continue
-
-            name = message_subject[len(prefix):]
-            message_handler.subject = prefix + encode_replicable_info(name, self)
-
+        def get_subject(identifier, request):
             # Subscribe to messages
-            if prefix == message_self:
-                self.messenger.add_subscriber(name, partial(self.receive_prefixed_message, prefix, name))
+            if identifier == "SELF_MESSAGE":
+                send_to_bge = partial(self.receive_identified_message, identifier, request)
+                self.messenger.add_subscriber(request, send_to_bge)
+
+            return encode_replicable_info(request, self)
+
+        sensors = [s for s in obj.sensors if isinstance(s, types.KX_NetworkMessageSensor)]
+        convert_object_message_logic(sensors, message_prefixes_replicable, get_subject)
 
         # Convert actuators
-        actuators = [c for c in self.game_object.actuators if isinstance(c, types.KX_NetworkMessageActuator)]
-        for message_handler in actuators:
-            message_subject = message_handler.subject
-
-            for prefix in message_prefixes_replicable.values():
-                if message_subject.startswith(prefix):
-                    break
-
-            else:
-                continue
-
-            name = message_subject[len(prefix):]
-            message_handler.subject = prefix + encode_replicable_info(name, self)
+        get_subject = lambda identifier, request: encode_replicable_info(request, self)
+        actuators = [c for c in obj.actuators if isinstance(c, types.KX_NetworkMessageActuator)]
+        convert_object_message_logic(actuators, message_prefixes_replicable, get_subject)
 
     @simulated
     def set_network_states(self, just_initialised=False):
@@ -164,7 +147,7 @@ class SCAActor(_Actor):
         for name_, value in zip(arguments, data):
             self.game_object[name_] = value
 
-        self.receive_prefixed_message(message_prefixes_replicable['RPC_INVOKE'], event_name)
+        self.receive_identified_message('RPC_INVOKE', event_name)
 
     @simulated
     def invoke_rpc(self, rpc_name):

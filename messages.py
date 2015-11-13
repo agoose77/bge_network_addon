@@ -1,3 +1,4 @@
+from collections import OrderedDict
 from json import dumps, loads
 
 message_subjects = dict(CONTROLLER_REQUEST="CONTROLLER_REQUEST")
@@ -25,11 +26,57 @@ message_prefixes_scene = dict(
 )
 
 
-all_message_prefixes = set(message_prefixes_replicable.values()) | set(message_prefixes_global.values()) | \
-                       set(message_prefixes_scene.values())
+all_message_prefixes = message_prefixes_replicable.copy()
+all_message_prefixes.update(message_prefixes_scene)
+all_message_prefixes.update(message_prefixes_global)
 
-# CREATE_PAWN
-#
+
+def convert_object_message_logic(message_logic_bricks, prefix_dictionary, get_request=None):
+    """Convert logic bricks which use SCENE message API"""
+    # Convert sensors
+    for message_handler in message_logic_bricks:
+        message_subject = message_handler.subject
+
+        # Find in scene prefixes
+        try:
+            identifier, request = prefix_identifier_from_subject(message_subject, prefix_dictionary)
+
+        except ValueError:
+            continue
+
+        if get_request is not None:
+            request = get_request(identifier, request)
+
+        message_handler.subject = encode_subject(identifier, request)
+
+
+def prefix_identifier_from_subject(subject, prefix_dictionary=None):
+    if prefix_dictionary is None:
+        prefix_dictionary = all_message_prefixes
+
+    for identifier, prefix in prefix_dictionary.items():
+        if subject.startswith(prefix):
+            return identifier, subject[len(prefix):]
+
+    raise ValueError("Invalid subject")
+
+
+def encode_subject(identifier, subject=''):
+    return "${}${}".format(identifier, subject)
+
+
+def decode_subject(encoded_subject):
+    if encoded_subject[0] != "$":
+        raise ValueError
+
+    after_first_char = encoded_subject[1:]
+    end_index = after_first_char.find("$")
+    if end_index == -1:
+        raise ValueError
+
+    identifier = after_first_char[:end_index]
+    subject = after_first_char[end_index + 1:]
+    return identifier, subject
 
 
 def encode_object(subject, obj):
