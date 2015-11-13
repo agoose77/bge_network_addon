@@ -13,6 +13,7 @@ from bge_game_system.world import World as _World
 from bge_game_system.scene import Scene as _Scene
 
 from collections import defaultdict, OrderedDict, deque
+from functools import partial
 from json import load
 from os import path
 from weakref import ref
@@ -387,7 +388,7 @@ class Scene(_Scene):
         :param subject: subject of message
         """
         modified_subject = encode_scene_info(subject, self)
-        logic.sendMessage(prefix + modified_subject, "<invalid>")
+        logic.sendMessage(prefix + modified_subject)
 
     def _load_configuration_files(self):
         bge_scene = self.bge_scene
@@ -494,7 +495,7 @@ class GameLoop(FixedTimeStepManager):
         # Set network state
         self._update_network_state()
 
-        logic.sendMessage("NETWORK_INIT", "<invalid>")
+        logic.sendMessage("NETWORK_INIT")
 
         print("Network started")
 
@@ -510,10 +511,11 @@ class GameLoop(FixedTimeStepManager):
         prefix = message_prefixes_global[name]
         self.listeners[prefix].append(func)
 
-    def handle_messages(self, messages):
-        self._messages.extend(messages)
+    def push_network_message(self, messages):
+        self._messages.append(messages)
 
     def _process_messages(self):
+        # TODO pre-extract prefixes in SCENE/replicable setup
         messages = self._messages[:]
         self._messages.clear()
 
@@ -526,12 +528,8 @@ class GameLoop(FixedTimeStepManager):
         # Lower priority
         non_global_messages = []
 
-        for subject, body in messages:
+        for subject in messages:
             starts_with = subject.startswith
-
-            # Ignore internal messages
-            if body == "<internal>":
-                continue
 
             for prefix, listeners in prefix_listeners.copy().items():
                 if starts_with(prefix):
@@ -612,7 +610,7 @@ class GameLoop(FixedTimeStepManager):
         return 1 / logic.getLogicTicRate()
 
     def post_initialise(self, replication_manager):
-        logic.sendMessage('CREATE_PAWN', '<invalid>')
+        logic.sendMessage('CREATE_PAWN')
 
     def check_exit(self):
         # Handle exit
@@ -722,20 +720,91 @@ def main():
     game_loop.run()
 
 
-def listener(cont):
-    """Dispatch messages to listeners
-
-    :param cont: controller instance
-    """
-    message_sens = next(c for c in cont.sensors if isinstance(c, types.KX_NetworkMessageSensor))
-
-    if not message_sens.positive:
+# Instant-message API
+def activate_actuator(cont, actuator):
+    if not isinstance(actuator, types.KX_NetworkMessageActuator):
+        cont.activate(actuator)
         return
 
-    subjects = message_sens.subjects
-    bodies = message_sens.bodies
-    messages = list(zip(subjects, bodies))
-
-    logic.game_loop.handle_messages(messages)
+    logic.game_loop.push_network_message(actuator.subject)
 
 
+def deactivate_actuator(cont, actuator):
+    if not isinstance(actuator, types.KX_NetworkMessageActuator):
+        cont.deactivate(actuator)
+        return
+
+
+def _logical_controller(condition, cont):
+    if condition(cont.sensors):
+        for actuator in cont.actuators:
+            activate_actuator(cont, actuator)
+    else:
+        for actuator in cont.actuators:
+            deactivate_actuator(cont, actuator)
+
+
+def _AND(sensors):
+    for sens in sensors:
+        if not sens.positive:
+            return False
+
+    return True
+
+
+def _NAND(sensors):
+    return not _AND(sensors)
+
+
+def _OR(sensors):
+    for sens in sensors:
+        if sens.positive:
+            return True
+
+    return False
+
+
+def _NOR(sensors):
+    return not _OR(sensors)
+
+
+def _XOR(sensors):
+    number_positive = 0
+    for sens in sensors:
+        if sens.positive:
+            number_positive += 1
+
+    return number_positive == 1
+
+
+def _XNOR(sensors):
+    number_false = 0
+    for sens in sensors:
+        if not sens.positive:
+            number_false += 1
+
+    return number_false == 1
+
+
+def AND(cont):
+    _logical_controller(_AND, cont)
+
+
+def NAND(cont):
+    _logical_controller(_NAND, cont)
+
+
+def OR(cont):
+    _logical_controller(_OR, cont)
+
+
+def NOR(cont):
+    _logical_controller(_NOR, cont)
+
+
+def XNOR(cont):
+    _logical_controller(_XNOR, cont)
+
+
+def XOR(cont):
+    _logical_controller(_XOR, cont)

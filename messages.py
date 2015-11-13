@@ -24,6 +24,10 @@ message_prefixes_scene = dict(
     CONTROLLER_ASSIGN="NEW_PAWN=",
 )
 
+
+all_message_prefixes = set(message_prefixes_replicable.values()) | set(message_prefixes_global.values()) | \
+                       set(message_prefixes_scene.values())
+
 # CREATE_PAWN
 #
 
