@@ -41,16 +41,16 @@ from logging import warning, info, exception
 import webbrowser
 from urllib.parse import urlencode
 
-from game_system.configobj import ConfigObj
 from network.replicable import Replicable
 
 # Submodules
-from .utilities import get_active_item, if_not_busy, copy_logic_properties_to_collection
+from .utilities import if_not_busy, copy_logic_properties_to_collection
 from .version_checker import RemoteVersionChecker
 from .property_groups import *
 from .configuration import *
 from .operators import *
 from .renderers import *
+from .utilities import type_to_enum_type, get_active_item, load_template
 
 
 active_network_scene = None
@@ -125,7 +125,7 @@ class SystemPanel(bpy.types.Panel):
                                                                   description="Time (in seconds) between successive "
                                                                               "network metrics updates")
         bpy.types.Scene.use_network = bpy.props.BoolProperty(name="Use Networking", default=False,
-                                                             description="Set current scene as network scene",
+                                                             description="Set current scene as root network scene",
                                                              update=on_scene_use_network_updated)
 
     def draw_header(self, context):
@@ -145,20 +145,20 @@ class SystemPanel(bpy.types.Panel):
         layout.operator("network.select_all", icon='GROUP', text="Select Only Network Objects")
 
 
-def obj_panel_network_poll(cls, context):
-    obj = context.object
-    scene = context.scene
-    return obj is not None and obj.use_network and scene.use_network
+class ObjectSettingsPanel(bpy.types.Panel):
+
+    @classmethod
+    def poll(cls, context):
+        obj = context.object
+        return obj is not None and obj.use_network
 
 
-class RPCPanel(bpy.types.Panel):
+class RPCPanel(ObjectSettingsPanel):
     bl_space_type = "LOGIC_EDITOR"
     bl_region_type = "UI"
     bl_label = "RPC Calls"
 
     COMPAT_ENGINES = {'BLENDER_GAME'}
-
-    poll = classmethod(obj_panel_network_poll)
 
     @classmethod
     def register(cls):
@@ -186,9 +186,8 @@ class RPCPanel(bpy.types.Panel):
         rpc_data.label("Info", icon='INFO')
         rpc_data.prop(active_rpc, 'name')
         rpc_data.prop(active_rpc, 'target')
-        rpc_data.prop(active_rpc, 'reliable', icon='LIBRARY_DATA_DIRECT' if active_rpc.reliable else
-                      'LIBRARY_DATA_INDIRECT')
-        rpc_data.prop(active_rpc, 'simulated', icon='SOLO_ON' if active_rpc.simulated else 'SOLO_OFF')
+        rpc_data.prop(active_rpc, 'reliable', icon='DRIVER' if active_rpc.reliable else 'RADIO')
+        rpc_data.prop(active_rpc, 'simulated', icon='UNLOCKED' if active_rpc.simulated else 'LOCKED')
 
         rpc_args = rpc_settings.column()
         rpc_args.label("Arguments", icon='SETTINGS')
@@ -196,20 +195,17 @@ class RPCPanel(bpy.types.Panel):
                                "arguments_index", rows=3)
 
 
-class StatesPanel(bpy.types.Panel):
+class StatesPanel(ObjectSettingsPanel):
     bl_space_type = "LOGIC_EDITOR"
     bl_region_type = "UI"
     bl_label = "Network State"
 
     COMPAT_ENGINES = {'BLENDER_GAME'}
 
-    poll = classmethod(obj_panel_network_poll)
-
     @classmethod
     def register(cls):
         bpy.types.Object.states_index = bpy.props.IntProperty(default=0, update=state_changed)
         bpy.types.Object.states = bpy.props.CollectionProperty(name="Network States", type=StateGroup)
-        bpy.types.Object.simulated_states = bpy.props.BoolVectorProperty(name="Simulated States", size=30)
 
     def draw_states_row(self, data, name, layout, icon_func=None):
         top_i = 0
@@ -218,9 +214,10 @@ class StatesPanel(bpy.types.Panel):
         if icon_func is None:
             icon_func = lambda index: 'BLANK1'
 
-        sub_layout = layout.column_flow(columns=3)
+        main_row = layout.row()
         for col_i in range(3):
-            column = sub_layout.column(align=True)
+            column = main_row.column(align=True)
+
             row = column.row(align=True)
             for _ in range(5):
                 icon = icon_func(top_i)
@@ -238,41 +235,73 @@ class StatesPanel(bpy.types.Panel):
 
         obj = context.object
 
-        sub_layout = layout.split(0.3)
-        sub_layout.label("Simulated States")
-
-        box = sub_layout.box()
-        self.draw_states_row(obj, 'simulated_states', box)
-
-        column = box.column()
-        set_states = column.operator("network.set_states_from_visible", icon='VISIBLE_IPO_ON', text="")
-        set_states.set_simulated = True
+        split_width = 0.15
 
         layout.label("Netmode States")
-        sub_layout = layout.split(0.3)
-        sub_layout.template_list('RENDER_RT_StateList', "States", obj, "states", obj, "states_index", rows=3)
+        upper_sub_layout = layout.split(split_width)
+
+        upper_left = upper_sub_layout.column()
+        upper_left.template_list('RENDER_RT_StateList', "States", obj, "states", obj, "states_index", rows=3)
 
         active_state = get_active_item(obj.states, obj.states_index)
         if active_state is None:
             return
 
-        box = sub_layout.box()
-        simulated_icon = lambda i: 'KEY_HLT' if obj.simulated_states[i] else 'BLANK1'
-        self.draw_states_row(active_state, 'states', box, icon_func=simulated_icon)
+        # Top layer
+        upper_right = upper_sub_layout.column()
+        upper_sub_right = upper_right.split(0.92)
+        right_states = upper_sub_right.box()
+        network_role = obj.remote_role
 
-        column = box.column()
-        column.operator("network.set_states_from_visible", icon='VISIBLE_IPO_ON', text="")
+        no_states = {'DUMB_PROXY', 'NONE'}
+
+        is_client = is_client = active_state.netmode.upper() == "CLIENT"
+
+        def simulated_icon(index):
+            is_simulated = active_state.simulated_states[index]
+            is_active = active_state.states[index]
+
+            if not is_active:
+                return 'BLANK1'
+
+            if is_client:
+                if network_role in no_states:
+                    return 'PINNED'
+
+                if network_role == 'SIMULATED_PROXY' and not is_simulated:
+                    return 'SAVE_AS'
+
+                if network_role == 'AUTONOMOUS_PROXY':
+                    if not is_simulated:
+                        return 'SAVE_AS'
+
+            return 'FILE_TICK'
+
+        self.draw_states_row(active_state, 'states', right_states, icon_func=simulated_icon)
+        upper_sub_right.operator("network.set_states_from_visible", icon='LOGIC', text="")
+
+        if is_client:
+            lower_sub_layout = layout.split(split_width)
+            lower_sub_layout.label("Simulated States")
+
+            lower_right = lower_sub_layout.column()
+            lower_sub_right = lower_right.split(0.92)
+            right_states = lower_sub_right.box()
+            network_role = obj.remote_role
+
+            no_states = {'DUMB_PROXY', 'NONE'}
+
+            self.draw_states_row(active_state, 'simulated_states', right_states)
+            lower_sub_right.operator("network.set_states_from_visible", icon='LOGIC', text="")
 
 
 # Add support for modifying inherited parameters?
-class AttributesPanel(bpy.types.Panel):
+class AttributesPanel(ObjectSettingsPanel):
     bl_space_type = "LOGIC_EDITOR"
     bl_region_type = "UI"
     bl_label = "Replicated Attributes"
 
     COMPAT_ENGINES = {'BLENDER_GAME'}
-
-    poll = classmethod(obj_panel_network_poll)
 
     @classmethod
     def register(cls):
@@ -288,56 +317,41 @@ class AttributesPanel(bpy.types.Panel):
         layout.template_list('RENDER_RT_AttributeList', "Properties", obj, "attributes", obj, "attribute_index", rows=3)
 
 
-class TemplatesPanel(bpy.types.Panel):
+class TemplatesPanel(ObjectSettingsPanel):
     bl_space_type = "LOGIC_EDITOR"
     bl_region_type = "UI"
     bl_label = "Templates"
 
     COMPAT_ENGINES = {'BLENDER_GAME'}
 
-    poll = classmethod(obj_panel_network_poll)
-
     @classmethod
     def register(cls):
-        bpy.types.Object.templates_index = bpy.props.IntProperty(default=0)
-        bpy.types.Object.templates = bpy.props.CollectionProperty(name="Templates", type=TemplateModule)
-        bpy.types.Object.template_defaults = bpy.props.CollectionProperty(name="TemplateDefaults",
-                                                                          type=ResolvedTemplateAttributeDefault)
-        bpy.types.Object.templates_defaults_index = bpy.props.IntProperty(default=0)
+        bpy.types.Object.template = bpy.props.PointerProperty(name="Template", type=TemplateClass)
 
     def draw(self, context):
         layout = self.layout
 
         obj = context.object
 
-        rpc_list = layout.row()
-        rpc_list.template_list('RENDER_RT_TemplateGroupList', "Templates", obj, "templates", obj, "templates_index",
-                               rows=3)
-
-        row = rpc_list.column(align=True)
-        row.operator("network.add_template", icon='ZOOMIN', text="")
-        row.operator("network.remove_template", icon='ZOOMOUT', text="")
-
-        active_template = get_active_item(obj.templates, obj.templates_index)
-        if active_template is None:
-            return
-
+        template = obj.template
         column = layout.column()
-        column.label("Template Classes")
-        column.template_list('RENDER_RT_TemplateList', "TemplateItems", active_template, "templates", active_template,
-                             "templates_active", rows=3)
 
-        if active_template is None:
-            return
+        if template.import_path:
+            row = column.split(0.7, align=True)
+            row.label(template.import_path)
+            row.operator("network.set_template_class", text="", icon='LOAD_FACTORY')
+            row.operator("network.remove_template_class", text="", icon='PANEL_CLOSE')
 
-        row = layout.row()
-        row.label("Template Attributes")
+            column.label("Template Attributes")
 
-        layout.template_list('RENDER_RT_TemplateDefaultList', "TemplateItemDefaults", obj, "template_defaults",
-                             obj, "templates_defaults_index", rows=3)
+            layout.template_list('RENDER_RT_TemplateDefaultList', "TemplateItemDefaults", template, "defaults",
+                                 template, "defaults_active", rows=3)
 
-        if not obj.template_defaults:
-            layout.label("Final class could not be built from selected template classes", icon='ERROR')
+            if not template.defaults:
+                layout.label("Final class could not be built from selected template classes", icon='ERROR')
+
+        else:
+            column.operator("network.set_template_class", text="Load Template", icon='LOAD_FACTORY')
 
 
 class NetworkPanel(bpy.types.Panel):
@@ -362,19 +376,13 @@ class NetworkPanel(bpy.types.Panel):
     def draw_header(self, context):
         obj = context.object
 
-        if context.scene.use_network:
-            self.layout.prop(obj, "use_network", text="")
+        self.layout.prop(obj, "use_network", text="")
 
     def draw(self, context):
         obj = context.object
         layout = self.layout
         layout.active = obj.use_network
-
-        if context.scene.use_network:
-            layout.prop(obj, "remote_role")
-
-        else:
-            self.layout.label("Networking Must Be Enabled For This Scene", icon='ERROR')
+        layout.prop(obj, "remote_role", icon='KEYINGSET')
 
 
 def save_state(context):
@@ -383,69 +391,68 @@ def save_state(context):
         print("No network scene exists, nothing to save...")
         return
 
-    data_path = bpy.path.abspath("//{}".format(DATA_PATH))
+    root_data_path = bpy.path.abspath("//{}".format(DATA_PATH))
 
-    try:
-        file_names = listdir(data_path)
+    for scene in bpy.data.scenes:
+        data_path = path.join(root_data_path, scene.name)
+        try:
+            file_names = listdir(data_path)
 
-    except FileNotFoundError:
-        makedirs(data_path, exist_ok=True)
-        file_names = listdir(data_path)
+        except FileNotFoundError:
+            makedirs(data_path, exist_ok=True)
+            file_names = listdir(data_path)
 
-    config = {}
+        for obj in scene.objects:
+            obj_name = obj.name
+            obj_path = path.join(data_path, obj_name)
 
-    for obj in network_scene.objects:
-        obj_name = obj.name
-        obj_path = path.join(data_path, obj_name)
+            # Remove any previous network objects
+            if not obj.use_network:
+                if obj_name in file_names:
+                    rmtree(obj_path)
 
-        # Remove any previous network objects
-        if not obj.use_network:
-            if obj_name in file_names:
-                rmtree(obj_path)
+                continue
 
-            continue
+            definition_filepath = path.join(obj_path, "actor.definition")
 
-        definition_filepath = path.join(obj_path, "actor.definition")
+            data = dict()
 
-        data = dict()
+            get_property_value = lambda n: obj.game.properties[n].value
+            data['attributes'] = {a.name: {'default': get_property_value(a.name),
+                                           'initial_only': not a.replicate_after_initial,
+                                           'ignore_owner': not a.replicate_for_owner}
+                                  for a in obj.attributes if a.replicate}
 
-        get_property_value = lambda n: obj.game.properties[n].value
-        data['attributes'] = {a.name: {'default': get_property_value(a.name),
-                                       'initial_only': not a.replicate_after_initial,
-                                       'ignore_owner': not a.replicate_for_owner}
-                              for a in obj.attributes if a.replicate}
+            data['rpc_calls'] = {r.name: {'arguments': {a.name: a.type for a in r.arguments if a.replicate},
+                                          'target': r.target, 'reliable': r.reliable,
+                                          'simulated': r.simulated} for r in obj.rpc_calls}
 
-        data['rpc_calls'] = {r.name: {'arguments': {a.name: a.type for a in r.arguments if a.replicate},
-                                      'target': r.target, 'reliable': r.reliable,
-                                      'simulated': r.simulated} for r in obj.rpc_calls}
+            base_import_path = obj.template.import_path
+            if not base_import_path:
+                base_import_path = None
 
-        data['templates'] = ["{}.{}".format(m.name, c.name) for m in obj.templates for c in m.templates if c.active]
-        data['defaults'] = {d.name: getattr(d, d.value_name) for d in obj.template_defaults if d.modified}
-        data['states'] = {c.name: list(c.states) for c in obj.states}
-        data['simulated_states'] = list(obj.simulated_states)
-        data['remote_role'] = obj.remote_role
+            data['template'] = base_import_path
+            data['defaults'] = {d.name: getattr(d, d.value_name) for d in obj.template.defaults}
+            data['states'] = {c.netmode: {'states': list(c.states), 'simulated_states': list(c.simulated_states)}
+                              for c in obj.states}
+            data['remote_role'] = obj.remote_role
 
-        # Make sure we have directory for actor definition
-        definition_directory = path.dirname(definition_filepath)
-        makedirs(definition_directory, exist_ok=True)
+            # Make sure we have directory for actor definition
+            definition_directory = path.dirname(definition_filepath)
+            makedirs(definition_directory, exist_ok=True)
 
-        with open(definition_filepath, "w") as file:
-            dump(data, file)
+            with open(definition_filepath, "w") as file:
+                dump(data, file)
 
-        configuration = ConfigObj()
-        configuration['BGE'] = {'object_name': obj.name}
+    # Main settings
+    main_config = {}
+    main_config['port'] = network_scene.port
+    main_config['tick_rate'] = network_scene.tick_rate
+    main_config['metric_interval'] = network_scene.metric_interval
+    main_config['scene'] = network_scene.name
 
-        configuration_filepath = path.join(data_path, "{}/definition.cfg".format(obj.name))
-        with open(configuration_filepath, "wb") as file:
-            configuration.write(file)
-
-    config['port'] = network_scene.port
-    config['tick_rate'] = network_scene.tick_rate
-    config['metric_interval'] = network_scene.metric_interval
-    config['scene'] = network_scene.name
-
-    with open(path.join(data_path, "main.definition"), "w") as file:
-        dump(config, file)
+    with open(path.join(root_data_path, "main.definition"), "w") as file:
+        dump(main_config, file)
 
 
 def get_addon_folder():
@@ -479,16 +486,15 @@ def update_attributes(context):
 
     for rpc_call in obj.rpc_calls:
         copy_logic_properties_to_collection(attributes, rpc_call.arguments,
-                                   lambda prop: attribute_allowed_as_argument(rpc_call, prop))
+                                            lambda prop: attribute_allowed_as_argument(rpc_call, prop))
 
     if not obj.states:
         server = obj.states.add()
-
-        server.name = "Server"
+        server.netmode = "Server"
         server.states[1] = True
 
         client = obj.states.add()
-        client.name = "Client"
+        client.netmode = "Client"
         client.states[0] = True
 
 
@@ -574,77 +580,40 @@ def update_templates(context):
     except (AttributeError, AssertionError):
         return
 
-    for module_path in DEFAULT_TEMPLATE_MODULES:
-        if module_path in obj.templates:
-            continue
+    template = obj.template
 
-        template = obj.templates.add()
-        template.name = module_path
-
-    template_module = get_active_item(obj.templates, obj.templates_index)
-    if template_module is None:
-        return
-
-    template_path = template_module.name
-
+    template_path = template.import_path
     if not template_path:
         return
 
-    if template_module.loaded:
+    defaults = template.defaults
+    if defaults:
         return
 
-    try:
-        module = __import__(template_path, fromlist=[''])
+    cls = load_template(template_path)
 
-    except ImportError as err:
-        exception("Failed to load {}: {}".format(template_path, err))
-        return
+    # Store the default attribute values
+    defaults = template.defaults
+    defaults.clear()
 
-    else:
-        info("Loaded {}".format(template_path))
+    template.defaults_active = 0
 
-    templates = template_module.templates
-    templates.clear()
+    ui_types = int, bool, str, float
 
-    required_templates = []
-    for name, value in getmembers(module, is_replicable):
-        if name.startswith("_"):
+    for attribute_name, attribute_value in getmembers(cls):
+        if attribute_name.startswith("_"):
             continue
 
-        if name in HIDDEN_BASES:
+        value_type = type(attribute_value)
+        if value_type not in ui_types:
             continue
 
-        info("Found class {}".format(name))
+        default = defaults.add()
+        default.name = attribute_name
+        default.type = type_to_enum_type(value_type)
 
-        template = templates.add()
-        template.name = name
-
-        if name in DEFAULT_TEMPLATE_MODULES.get(template_path, []):
-            required_templates.append(template)
-
-        # Store the default attribute values
-        defaults = template.defaults
-        ui_types = int, bool, str, float
-
-        for attribute_name, attribute_value in getmembers(value):
-            if attribute_name.startswith("_"):
-                continue
-
-            value_type = type(attribute_value)
-            if value_type not in ui_types:
-                continue
-
-            default = defaults.add()
-            default.name = attribute_name
-            default.type = type_to_enum_type(value_type)
-
-            value_name = default.value_name
-            setattr(default, value_name, attribute_value)
-
-    template_module.loaded = True
-
-    for template in required_templates:
-        template.required = template.active = True
+        value_name = default.value_name
+        setattr(default, value_name, attribute_value)
 
 
 def update_use_network(context):
@@ -746,6 +715,7 @@ def poll_version_checker(context):
                 args_url = "{}?{}".format(url, urlencode(args))
                 webbrowser.open(args_url)
 
+
 def send_version_check_requests():
     """Send version comparison request to worker thread"""
     local_filepath = path.join(get_addon_folder(), "version.txt")
@@ -845,9 +815,9 @@ def register():
 
     # Check for updates
     user_preferences = bpy.context.user_preferences
-    addon_prefs = user_preferences.addons[__name__].preferences
-    if addon_prefs.update_on_startup:
-        send_version_check_requests()
+    # addon_prefs = user_preferences.addons[__name__].preferences
+    # if addon_prefs.update_on_startup:
+    #     send_version_check_requests()
 
     registered = True
 

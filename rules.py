@@ -1,29 +1,24 @@
-from network.world_info import WorldInfo
 from network.replicable import Replicable
-from network.rules import ReplicationRulesBase
 
-from game_system.controllers import PawnController, PlayerPawnController
-from game_system.entities import Actor
-from game_system.replication_info import ReplicationInfo
+from game_system.replicables import PawnController, PlayerPawnController, ReplicationInfo
+from game_system.entity import Actor
 
-from controllers import IRCChatController
-from mainloop import ControllerPendingAssignmentSignal
+from bge import logic
 
 
-class Rules(ReplicationRulesBase):
-    
-    def pre_initialise(self, addr, netmode):
+class Rules:
+
+    def pre_initialise(self, connection_info):
         return
     
-    def post_disconnect(self, conn, replicable):
-        replicable.deregister()
+    # def post_disconnect(self, conn, replicable):
+    #     replicable.deregister()
     
-    def post_initialise(self, replication_stream):
-        cont = IRCChatController()
-        ControllerPendingAssignmentSignal.invoke(cont)
-        return cont
+    def post_initialise(self, replication_manager):
+        # Ask for a pawn to be spawned
+        logic.game.create_new_player(replication_manager)
             
-    def is_relevant(self, connection, replicable):
+    def is_relevant(self, replication_manager, replicable):
         if isinstance(replicable, PawnController):
             return False
         
@@ -37,7 +32,4 @@ class Rules(ReplicationRulesBase):
             return True
 
 
-def init():
-    rules = Rules()
-
-    WorldInfo.rules = rules
+# TODO allow BGE (logic bricks) scene to handle incoming controller - spawn in right scene

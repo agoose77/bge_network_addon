@@ -1,8 +1,6 @@
 from bpy import types, props, utils
 
-from .configuration import DEFAULT_TEMPLATE_MODULES
-from .utilities import get_active_item
-
+from .utilities import unload_template
 
 _check_for_updates = None
 
@@ -44,12 +42,12 @@ class LOGIC_OT_remove_rpc(types.Operator):
         return {'FINISHED'}
 
 
-class LOGIC_OT_add_template(types.Operator):
+class LOGIC_OT_add_template_class(types.Operator):
     """Load templates from a module"""
-    bl_idname = "network.add_template"
-    bl_label = "Add template"
+    bl_idname = "network.set_template_class"
+    bl_label = "Add template module"
 
-    path = props.StringProperty(name="Path", description="Path to templates")
+    path = props.StringProperty(name="Path", description="Path to template module")
 
     @classmethod
     def poll(cls, context):
@@ -60,24 +58,18 @@ class LOGIC_OT_add_template(types.Operator):
 
     def execute(self, context):
         obj = context.active_object
-        name = self.path
+        path = self.path
 
-        try:
-            __import__(name, fromlist=[''])
-
-        except (ValueError, ImportError):
-            return {'CANCELLED'}
-
-        template = obj.templates.add()
-        template.name = name
+        template_module = obj.template
+        template_module.import_path = path
 
         return {'FINISHED'}
 
 
-class LOGIC_OT_remove_template(types.Operator):
-    """Unload templates from a module"""
-    bl_idname = "network.remove_template"
-    bl_label = "Remove template"
+class LOGIC_OT_remove_template_class(types.Operator):
+    """Unload template from a module"""
+    bl_idname = "network.remove_template_class"
+    bl_label = "Remove template class"
 
     @classmethod
     def poll(cls, context):
@@ -85,10 +77,14 @@ class LOGIC_OT_remove_template(types.Operator):
 
     def execute(self, context):
         obj = context.active_object
-        active_template = get_active_item(obj.templates, obj.templates_index)
+        template = obj.template
 
-        if not active_template.name in DEFAULT_TEMPLATE_MODULES:
-            obj.templates.remove(obj.templates_index)
+        template.defaults.clear()
+        template.defaults_active = 0
+
+        unload_template(template.import_path)
+
+        template.import_path = ""
 
         return {'FINISHED'}
 
@@ -98,7 +94,9 @@ class LOGIC_OT_set_states_from_visible(types.Operator):
     bl_idname = "network.set_states_from_visible"
     bl_label = "Save logic states for this netmode"
 
-    set_simulated = props.BoolProperty(default=False)
+    mode = props.EnumProperty(items=(("states", "states", "states"),
+                                     ("simulated_states", "simulated_states", "simulated_states")),
+                            default="states")
 
     @classmethod
     def poll(cls, context):
@@ -106,12 +104,9 @@ class LOGIC_OT_set_states_from_visible(types.Operator):
 
     def execute(self, context):
         obj = context.active_object
-        if self.set_simulated:
-            states = obj.simulated_states
 
-        else:
-            states = obj.states[obj.states_index].states
-
+        mode_states = obj.states[obj.states_index]
+        states = getattr(mode_states, self.mode)
         states[:] = obj.game.states_visible
 
         return {'FINISHED'}
@@ -131,8 +126,8 @@ class LOGIC_OT_show_states(types.Operator):
     def execute(self, context):
         obj = context.active_object
 
-        active_state = obj.states[self.index]
-        obj.game.states_visible = active_state.states
+        active_state_group = obj.states[self.index]
+        obj.game.states_visible = active_state_group.states
 
         for area in context.screen.areas:
             if area.type != 'LOGIC_EDITOR':

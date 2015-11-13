@@ -4,7 +4,7 @@ from bpy import types, utils
 class RENDER_RT_StateList(types.UIList):
 
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
-        layout.label(item.name, icon="NONE")
+        layout.label(item.netmode, icon="NONE")
 
 
 class RENDER_RT_RPCArgumentList(types.UIList):
@@ -52,26 +52,11 @@ class RENDER_RT_RPCList(types.UIList):
     def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
         layout.prop(item, "name", text="", emboss=False)
 
-        reliable_icon = 'LIBRARY_DATA_DIRECT' if item.reliable else 'LIBRARY_DATA_INDIRECT'
+        reliable_icon = 'DRIVER' if item.reliable else 'RADIO'
         layout.prop(item, "reliable", text="", icon=reliable_icon, emboss=False)
 
-        simulated_icon = 'SOLO_ON' if item.simulated else 'SOLO_OFF'
+        simulated_icon = 'UNLOCKED' if item.simulated else 'LOCKED'
         layout.prop(item, "simulated", text="", icon=simulated_icon, emboss=False)
-
-
-class RENDER_RT_TemplateGroupList(types.UIList):
-
-    def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
-        layout.label(icon='FILE_SCRIPT', text=item.name)
-
-
-class RENDER_RT_TemplateList(types.UIList):
-
-    def draw_item(self, context, layout, data, item, icon, active_data, active_propname, index):
-        layout.label(icon='SCRIPTPLUGINS', text=item.name)
-
-        if not item.required:
-            layout.prop(item, "active", text="")
 
 
 def register():

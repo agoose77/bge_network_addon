@@ -1,44 +1,30 @@
-from network.descriptors import Attribute
-from network.decorators import with_tag, reliable, simulated, set_annotation, requires_permission
+from network.annotations.decorators import reliable, simulated, requires_permission
 from network.enums import Netmodes, Roles
-from network.network import Network
+from network.network import NetworkManager
 from network.replicable import Replicable
-from network.signals import DisconnectSignal, Signal, SignalListener
-from network.type_flag import TypeFlag
-from network.world_info import WorldInfo
+from network.replication import Serialisable
 
-from game_system.game_loop import FixedTimeStepManager, OnExitUpdate
+from game_system.entity import MeshComponent
+from game_system.fixed_timestep import FixedTimeStepManager, ForcedLoopExit
 from game_system.resources import ResourceManager
-from game_system.signals import LogicUpdateSignal, TimerUpdateSignal, PlayerInputSignal
-from game_system.timer import Timer
 
-# Dummy logic loop support for non-patched blender
+from bge_game_system.entity.builder import EntityBuilder as _EntityBuilder
+from bge_game_system.world import World as _World
+from bge_game_system.scene import Scene as _Scene
+
+from collections import defaultdict, deque
+from functools import partial
+from json import load
+from os import path
+from weakref import ref
+
 from bge import logic, types
-types.KX_PythonLogicLoop = type("", (), {})
-
-from bge_game_system.inputs import BGEInputManager
-from bge_game_system.physics import BGEPhysicsSystem
-from bge_game_system.definitions import BGEComponent, BGEComponentLoader
-
-from collections import defaultdict, OrderedDict, deque
-from contextlib import ExitStack
-from json import load, loads, dumps
-from os import path, listdir
-from math import log
-
 from actors import *
-from signals import *
+from messages import *
+from rules import Rules
 
 
 DATA_PATH = "network_data"
-DELIMITER = ","
-
-replicables_to_game_objects = {}
-game_objects_to_replicables = {}
-
-classes = {}
-configurations = {}
-sorted_rpc_arguments = {}
 
 
 def safe_for_format(value):
@@ -48,323 +34,15 @@ def safe_for_format(value):
     return value
 
 
-class BpyResolver:
-
-    @staticmethod
-    def resolve_role(value):
-        return getattr(Roles, value.lower())
-
-    @staticmethod
-    def resolve_netmode(value):
-        """Convert BPY netmode enum to constant
-
-        :param value: enum value
-        """
-        return getattr(Netmodes, value.lower())
-
-    @staticmethod
-    def resolve_type(type_):
-        """Convert BPY type enum to type class
-
-        :param value: enum value
-        """
-        return dict(STRING=str, INT=int, BOOL=bool, FLOAT=float, TIMER=float)[type_]
+def convert_bpy_enum(value, enum):
+    return getattr(enum, value.lower())
 
 
-# Entity loader
-class GameObjectInjector:
-    """Inject GameObject into entity loader"""
-
-    game_object = None
-    _default_load = None
-
-    _find_or_create_object = BGEComponentLoader.find_or_create_object
-
-    @classmethod
-    def find_or_create_object(cls, entity, definition):
-        if cls.game_object is not None:
-            _pending_obj, cls.game_object = cls.game_object, None
-            return _pending_obj
-
-        return cls._find_or_create_object(entity, definition)
-
-
-BGEComponentLoader.find_or_create_object = GameObjectInjector.find_or_create_object
-ResourceManager.data_path = logic.expandPath("//{}".format(DATA_PATH))
-
-
-def string_to_wrapped_int(string, boundary):
-    value = 0
-    for char in string:
-        value = (value * 0x110000) + ord(char)
-    return value % boundary
-
-
-def instantiate_actor_from_obj(obj):
-    """Instantiate network actor from gameobject
-
-    :param obj: KX_GameObject instance
+def eval_bpy_type(type_name):
+    """Convert BPY type enum to type class
+    :param value: enum value
     """
-    cls = classes[obj.name]
-
-    GameObjectInjector.game_object = obj
-
-    if obj.name not in obj.scene.objectsInactive:
-        network_id = string_to_wrapped_int(obj.name, Replicable.MAXIMUM_REPLICABLES + 1)
-        print("Found static network object: {}, assigning ID: {}".format(obj.name, network_id))
-        return cls(network_id, static=True)
-
-    else:
-        return cls()
-
-
-def no_op_func(*args, **kwargs):
-    return None
-
-
-def load_configuration(name):
-    """Load configuration data for GameObject
-
-    :param name: name of GameObject
-    """
-
-    resource = ResourceManager[name]
-    config_path = ResourceManager.get_absolute_path(resource['actor.definition'])
-
-    with open(config_path, 'r') as file:
-        loaded = load(file)
-
-    loaded["states"] = {BpyResolver.resolve_netmode(x): y for x, y in loaded["states"].items()}
-
-    for function_name, data in loaded['rpc_calls'].items():
-        data['arguments'] = {k: BpyResolver.resolve_type(v) for k, v in data['arguments'].items()}
-        data['target'] = BpyResolver.resolve_netmode(data['target'])
-
-    loaded['remote_role'] = BpyResolver.resolve_role(loaded['remote_role'])
-
-    return loaded
-
-
-def load_object_definitions(scene):
-    """Load definition files for all objects, in all scenes
-
-    :param scene: scene to load for
-    """
-    for obj in list(scene.objects) + list(scene.objectsInactive):
-        name = obj.name
-
-        if name in classes:
-            continue
-
-        try:
-            configuration = load_configuration(name)
-
-        except FileNotFoundError:
-            continue
-
-        configurations[name] = configuration
-        sorted_rpc_arguments[name] = {rpc_name: sorted(data['arguments']) for rpc_name, data in
-                                      configuration['rpc_calls'].items()}
-
-        classes[name] = ReplicableFactory.from_configuration(name, configuration)
-
-
-from network.decorators import set_annotation, get_annotation
-from inspect import getmembers
-
-prefix_listener = lambda value: set_annotation("message_prefix")(value)
-get_prefix_listener = lambda value: get_annotation("message_prefix")(value)
-
-
-message_subjects = dict(CONTROLLER_REQUEST="CONTROLLER_REQUEST")
-
-# Prefixes for messages associated with replicables
-message_prefixes_unique = dict(
-    CONTROLLER_ASSIGN="CONTROLLER_ASSIGN_",
-    CONTROLLER_REASSIGN="CONTROLLER_REASSIGN_",
-    INITIALISER="ON_INIT_",
-
-    RPC_INVOKE="RPC_",
-    NOTIFICATION="NOTIFY_",
-    TARGETED_SIGNAL="SIGNAL_",
-    GLOBAL_SIGNAL="GLOBAL_SIGNAL_",
-    METHOD_INVOKE="CALL_",
-    )
-
-message_prefixes_global = dict(SET_NETMODE="SET_NETMODE_")
-
-
-class MessageDispatcher:
-
-    def __init__(self):
-        self.listeners = defaultdict(list)
-
-        for name, value in getmembers(self):
-            prefix = get_prefix_listener(value)
-            if prefix is not None:
-                self.listeners[prefix].append(value)
-
-    @staticmethod
-    def get_bound_prefix(prefix, subject, instance_id):
-        return prefix + dumps((subject, instance_id))
-
-    def handle_messages(self, subjects):
-        prefix_listeners = self.listeners
-        global_prefixes = set(message_prefixes_global.values())
-
-        for subject in subjects:
-            starts_with = subject.startswith
-
-            for prefix, listeners in prefix_listeners.items():
-                if starts_with(prefix):
-                    following_prefix = subject[len(prefix):]
-
-                    if prefix in global_prefixes:
-                        for listener in listeners:
-                            listener(following_prefix)
-
-                    else:
-                        payload, recipient_id = loads(following_prefix)
-                        for listener in listeners:
-                            listener(recipient_id, payload)
-
-    @prefix_listener(message_prefixes_global['SET_NETMODE'])
-    def message_listener_set_netmode(self, netmode_name):
-        try:
-            netmode = getattr(Netmodes, netmode_name)
-
-        except AttributeError:
-            print("Couldn't set netmode as {}".format(netmode_name))
-            return
-
-        NetmodeAssignedSignal.invoke(netmode)
-
-
-    @prefix_listener(message_prefixes_unique['METHOD_INVOKE'])
-    def message_listener_invoke_method(self, network_id, method_name):
-        """Handle RPC messages"""
-        try:
-            replicable = Replicable[network_id]
-
-        except KeyError:
-            return
-
-        getattr(replicable, method_name)()
-
-    @prefix_listener(message_prefixes_unique['RPC_INVOKE'])
-    def message_listener_rpc(self, network_id, rpc_name):
-        """Handle RPC messages"""
-        try:
-            replicable = Replicable[network_id]
-
-        except KeyError:
-            return
-
-        obj = replicables_to_game_objects[replicable]
-        obj_class_name = obj.name
-
-        rpc_args = sorted_rpc_arguments[obj_class_name][rpc_name]
-        rpc_data = [obj[arg_name] for arg_name in rpc_args]
-
-        getattr(replicable, rpc_name)(*rpc_data)
-
-    @prefix_listener(message_prefixes_unique['CONTROLLER_ASSIGN'])
-    def message_listener_controller_assignment(self, network_id, replicable_class_name):
-        """Handle connection controller initial pawn assignment"""
-        ControllerAssignedSignal.invoke(replicable_class_name, network_id)
-
-    @prefix_listener(message_prefixes_unique['CONTROLLER_REASSIGN'])
-    def message_listener_controller_reassignment(self, network_id, replicable_class_name):
-        """Handle connection controller subsequent pawn assignment"""
-        ControllerReassignedSignal.invoke(replicable_class_name, network_id)
-
-    @prefix_listener(message_prefixes_unique['INITIALISER'])
-    def message_listener_on_initialised(self, network_id, message_name):
-        """Handle connection controller subsequent pawn assignment"""
-        OnInitialisedMessageSignal.invoke(message_name, network_id)
-
-
-class PawnInitialisationManager(SignalListener):
-    """Handle initialisation of recently spawned pawns"""
-
-    def __init__(self):
-        self.initialisers_to_pawn = {}
-        self.register_signals()
-
-    def associate_pawn_with_initialiser(self, initialiser, pawn):
-        self.initialisers_to_pawn[initialiser] = pawn
-
-    @OnInitialisedMessageSignal.on_global
-    def forward_initialisation_message(self, subject, initialiser):
-        try:
-            pawn = self.initialisers_to_pawn[initialiser]
-
-        except KeyError:
-            print("Unable to associate network id: {} with a spawned object".format(initialiser))
-            return
-
-        # Send ONLY to this object (avoid positive feedback)
-        pawn.bge_interface.receive_prefixed_message(message_prefixes_unique['INITIALISER'], subject)
-
-
-def listener(cont):
-    """Dispatch messages to listeners
-
-    :param cont: controller instance
-    """
-    message_sens = next(c for c in cont.sensors if isinstance(c, types.KX_NetworkMessageSensor))
-
-    if not message_sens.positive:
-        return
-
-    subjects = message_sens.subjects
-    message_dispatcher.handle_messages(subjects)
-
-
-def signal_to_message(*args, signal, target, **kwargs):
-    """Produce message representation of signal"""
-    signal_name = signal.__name__
-
-    if isinstance(target, SCAActor):
-        modified_subject = MessageDispatcher.get_bound_prefix(message_prefixes_unique['TARGETED_SIGNAL'], signal_name,
-                                                              target.instance_id)
-        logic.sendMessage(modified_subject)
-
-    else:
-        subject = message_prefixes_unique['GLOBAL_SIGNAL'] + signal_name
-        logic.sendMessage(subject)
-
-
-class StateManager(SignalListener):
-    """Manages SCA state machine transitions"""
-
-    def __init__(self):
-        self.register_signals()
-
-        self.callbacks = []
-
-    @RegisterStateSignal.on_global
-    def handle_signal(self, callback):
-        self.callbacks.append(callback)
-
-    def set_states(self):
-        for callback in self.callbacks:
-            callback()
-
-        self.callbacks.clear()
-
-
-class SignalForwarder(SignalListener):
-    """Forward all globally available signals to handler"""
-
-    def __init__(self, handler):
-        self.register_signals()
-
-        self._handler = handler
-
-    @Signal.on_global
-    def handle_signal(self, *args, signal, target, **kwargs):
-        self._handler(signal, *args, signal=signal, target=target, **kwargs)
+    return dict(STRING=str, INT=int, BOOL=bool, FLOAT=float, TIMER=float)[type_name]
 
 
 class ReplicableFactory:
@@ -379,7 +57,7 @@ class ReplicableFactory:
         arguments = data['arguments']
         argument_names = sorted(arguments)
 
-        annotated_arguments = ["{}:TypeFlag({})".format(k, arguments[k].__name__) for k in argument_names]
+        annotated_arguments = ["{}: {}".format(k, arguments[k].__name__) for k in argument_names]
         argument_declarations = ", {}".format(','.join(annotated_arguments)) if argument_names else ""
         arguments = "({}{})".format(','.join(argument_names), ',' if argument_names else '')
 
@@ -401,7 +79,7 @@ class ReplicableFactory:
 """
 {decorators}
 def {name}(self{args}) -> {returns}:
-    self.bge_interface.dispatch_rpc('{name}', {all_args})
+    self.dispatch_rpc('{name}', {all_args})
 """
         return func_body.format(decorators=decorators, name=name, args=argument_declarations, returns=return_target,
                                 all_args=arguments)
@@ -409,28 +87,7 @@ def {name}(self{args}) -> {returns}:
     @classmethod
     def create_property_synchronisation(cls, attributes):
         names_str = "{}{}".format(','.join(["'{}'".format(x) for x in attributes]), ',' if attributes else '')
-        func_body = \
-"""
-properties = set(({}))
-
-def on_notify(self, name):
-    super().on_notify(name)
-
-    if name in self.properties:
-        self.bge_interface.set_property(name, getattr(self, name))
-
-@simulated
-@PropertySynchroniseSignal.on_global
-def update(self, delta_time):
-    if not self.bge_interface.is_alive:
-        return
-
-    if self.roles.local == Roles.authority:
-        get_property = self.bge_interface.get_property
-        for attr_name in self.properties:
-            setattr(self, attr_name, get_property(attr_name))"""
-
-        return func_body.format(names_str)
+        return """property_names = set(({}))""".format(names_str)
 
     @classmethod
     def create_conditions_string(cls, attributes):
@@ -463,8 +120,8 @@ def update(self, delta_time):
                     body_statements.append("yield '{}'".format(attr_name))
 
         yield_body = "\n    ".join(body_statements)
-        return """def conditions(self, is_owner, is_complaint, is_initial):\n"""\
-               """    yield from super().conditions(is_owner, is_complaint, is_initial)\n    {}""".format(yield_body)
+        return """def can_replicate(self, is_owner, is_initial):\n"""\
+               """    yield from super().can_replicate(is_owner, is_initial)\n    {}""".format(yield_body)
 
     @classmethod
     def create_attribute_string(cls, name, data, is_raw=False):
@@ -472,39 +129,37 @@ def update(self, delta_time):
         if not is_raw:
             default = safe_for_format(default)
 
-        return "{} = Attribute({}, notify=True)".format(name, default)
+        return "{} = Serialisable({}, notify_on_replicated=True)".format(name, default)
 
     @classmethod
-    def parse_bases(cls, base_paths):
-        namespace = OrderedDict()
-        for class_path in base_paths:
-            *module_path, class_name = class_path.split(".")
-            try:
-                module = __import__('.'.join(module_path), fromlist=[''])
-            except ImportError as err:
-                raise ImportError("Couldn't import template: {}".format(class_path)) from err
+    def load_base_class(cls, base_class_path):
+        *module_path, class_name = base_class_path.split(".")
 
-            try:
-                new_cls = getattr(module, class_name)
+        try:
+            module = __import__('.'.join(module_path), fromlist=[''])
+        except ImportError as err:
+            raise ImportError("Couldn't import template: {}".format(base_class_path)) from err
 
-            except AttributeError as err:
-                raise AttributeError("Template module {}.py has no class {}".format(module.__name__, class_name)) \
-                    from err
+        try:
+            new_cls = getattr(module, class_name)
 
-            namespace[class_name] = new_cls
+        except AttributeError as err:
+            raise AttributeError("Template module {}.py has no class {}".format(module.__name__, class_name)) \
+                from err
 
-        return namespace
+        return new_cls
 
     @classmethod
-    def from_configuration(cls, name, configuration):
+    def from_configuration(cls, raw_name, configuration):
         """Construct class from definition file
 
         :param name: name of class
         :param configuration: configuration data
         """
-        base_namespaces = cls.parse_bases(configuration['templates'])
+        name = raw_name.replace(".", "_")
+        assert name.isidentifier()
 
-        class_lines = []
+        class_lines = ["mesh = MeshComponent('{}')".format(raw_name)]
 
         attributes = configuration['attributes']
         attribute_definitions = [cls.create_attribute_string(attr_name, data) for attr_name, data
@@ -532,231 +187,217 @@ def update(self, delta_time):
                             for name, value in default_values.items()])
 
         class_body = "\n    ".join(class_lines)
-        bases_string = ", ".join(base_namespaces.keys())
-        class_declaration = "class {}({}):\n    ".format(name, bases_string) + class_body
 
-        exec(class_declaration, globals(), base_namespaces)
+        base_class_import_path = configuration['template']
+        if base_class_import_path is None:
+            base_name = "SCAActor"
+            namespace = {}
+        else:
+            base_class = cls.load_base_class(base_class_path=configuration['template'])
+            base_name = base_class.__name__
+            namespace = {base_name: base_class}
+
+        class_declaration = "class {}({}):\n    ".format(name, base_name) + class_body
+
         print(class_declaration)
-        return base_namespaces[name]
+        exec(class_declaration, globals(), namespace)
+        return namespace[name]
 
 
-class ControllerManager(SignalListener):
+class ControllerManager:
 
-    def __init__(self, initialisation_manager):
-        self.pending_controllers = deque()
-        self.initialisation_manager = initialisation_manager
+    def __init__(self, scene):
+        self._instigator_to_pawn = {}
 
-        self.register_signals()
+        self.scene = scene
 
-    @staticmethod
-    def request_assignment():
-        logic.sendMessage(message_subjects['CONTROLLER_REQUEST'])
-
-    @ControllerReassignedSignal.on_global
-    def on_reassigned(self, replicable_name, original_id):
+    def on_reassigned_pawn(self, old_pawn, replicable_class_name):
         try:
-            replicable_cls = Replicable.from_type_name(replicable_name)
+            replicable_cls = Replicable.subclasses[replicable_class_name]
 
         except KeyError:
-            print("Controller pawn assignment requires valid object name, not {}".format(replicable_name))
+            print("Controller pawn assignment requires valid object name, not {}".format(replicable_class_name))
             return
 
-        current_pawn = Replicable[original_id]
-        controller = current_pawn.uppermost
+        controller = old_pawn.root
 
         if controller is None:
             print("Cannot reassign pawn from network object with no controller")
             return
 
-        new_pawn = replicable_cls()
-        controller.possess(new_pawn)
+        assert old_pawn is controller.pawn
+        controller.release_control()
 
-        # Associate network object with this initialiser
-        self.initialisation_manager.associate_pawn_with_initialiser(original_id, new_pawn)
+        # We know old pawn has game object
+        bge_obj = old_pawn.game_object
 
-        # Deregister old pawn
-        current_pawn.deregister()
+        self._assign_new_pawn(bge_obj, controller, replicable_cls)
 
-    @ControllerPendingAssignmentSignal.on_global
-    def on_connection(self, controller):
-        self.pending_controllers.append(controller)
+        # Remove old pawn
+        self.scene.remove_replicable(old_pawn)
 
-        # Assume no code will listen for multiple messages
-        self.request_assignment()
+    def on_assigned_pawn(self, bge_obj, replicable_class_name):
+        replicable_cls = Replicable.subclasses[replicable_class_name]
 
-    @ControllerAssignedSignal.on_global
-    def on_assigned(self, replicable_name, initialiser_id):
-        controller = self.pending_controllers.popleft()
-        cls = Replicable.from_type_name(replicable_name)
-        replicable = cls()
-        controller.possess(replicable)
-        # Associate network object with this initialiser
-        self.initialisation_manager.associate_pawn_with_initialiser(initialiser_id,  replicable)
+        controller = self.scene.add_replicable(SCAPlayerPawnController)
+        replication_manager = self.scene.get_pending_connection_info()
 
-        # If still waiting, trigger controller
-        if self.pending_controllers:
-            self.request_assignment()
+        replication_manager.set_root_for_scene(self.scene, controller)
+
+        # Create and move pawn to creator!
+        pawn = self._assign_new_pawn(bge_obj, controller, replicable_cls)
+        pawn.transform.world_position = bge_obj.worldPosition
+        pawn.transform.world_orientation = bge_obj.worldOrientation.to_quaternion()
+
+    def send_to_new_pawn(self, instigator, message):
+        pawn = self._instigator_to_pawn[instigator]
+        pawn.receive_identified_message('SELF_MESSAGE', message)
+
+    def _assign_new_pawn(self, instigator, controller, replicable_cls):
+        pawn = self.scene.add_replicable(replicable_cls)
+        controller.take_control(pawn)
+        pawn.owner = controller
+
+        # Remember who created this pawn
+        self._instigator_to_pawn[instigator] = pawn
+
+        # Send ONLY to this object (avoid positive feedback)
+        self.send_to_new_pawn(instigator, "init")
+        return pawn
 
 
-@with_tag("bge_interface")
-class BGESetupComponent(BGEComponent):
+class EntityBuilder(_EntityBuilder):
 
-    def __init__(self, config_section, entity, obj):
-        """Initialise new network object
+    def __init__(self, bge_scene, empty_name="Empty", camera_name="Camera"):
+        super().__init__(bge_scene, empty_name, camera_name)
 
-        :param obj: GameObject instance
-        """
-        self._rpc_args = sorted_rpc_arguments[obj.name]
-        self._entity = entity
-        self._obj = obj
-        self._configuration = configurations[obj.name]
+        self.entity_configuration_info = {}
+        self.sorted_rpc_argument_info = {}
 
-        self.convert_message_logic(obj, entity.instance_id)
+    def create_object(self, entity, object_name):
+        obj = super().create_object(entity, object_name)
 
-        # Associate object with replicable
-        replicables_to_game_objects[entity] = obj
-        game_objects_to_replicables[obj] = entity
+        # Set network states
+        configuration = self.entity_configuration_info[object_name]
 
-        RegisterStateSignal.invoke(self.set_network_state)
+        entity.rpc_arguments = self.sorted_rpc_argument_info[object_name]
+        entity.states = configuration['states']
+        entity.game_object = obj
+        entity.set_network_states(just_initialised=True)
 
-    @property
-    def game_object(self):
-        return self._obj
+        obj["_entity"] = ref(entity)
 
-    @property
-    def is_alive(self):
-        return not self._obj.invalid
+        return obj
 
-    def get_property(self, name):
-        return self._obj[name]
 
-    def set_property(self, name, value):
-        self._obj[name] = value
+class Scene(_Scene):
 
-    def _class_receive_no_broadcast(self, subject):
-        """Send message that won't be picked up as a broadcast"""
-        self._obj.sendMessage(subject, "", self._obj.name)
+    def __init__(self, world, name):
+        super().__init__(world, name)
 
-    def send_message(self, subject, body="", target=""):
-        """Send message to game objects
+        self.entity_builder = EntityBuilder(self.bge_scene)
+        self.entity_classes = {}
 
-        :param subject: message subject
-        :param body: message body
-        :param target: name of objects to receive message
-        """
-        self._obj.sendMessage(subject, body, target)
+        if world.netmode == Netmodes.server:
+            self.controller_manager = ControllerManager(self)
+        else:
+            self.controller_manager = None
 
-    def receive_prefixed_message(self, prefix, subject):
+        self._load_configuration_files()
+        self._convert_scene_message_logic()
+
+        self.get_pending_connection_info = None
+
+    def cull_invalid_objects(self):
+        to_remove = []
+        for entity in self.entity_builder.entity_to_game_obj.keys():
+            if not entity.is_alive:
+                to_remove.append(entity)
+
+        for entity in to_remove:
+            self.remove_replicable(entity)
+
+    def _convert_scene_message_logic(self):
+        objects = list(self.bge_scene.objects)
+        objects.extend(self.bge_scene.objectsInactive)
+
+        for obj in objects:
+            self._convert_object_message_logic(obj)
+
+    def _convert_object_message_logic(self, obj):
+        """Convert logic bricks which use SCENE message API"""
+        # Convert sensors
+        def get_subject(identifier, request):
+            # Subscribe to messages
+            if identifier == 'SCENE_MESSAGE':
+                send_to_bge = partial(self.receive_identified_message, identifier, request)
+                self.messenger.add_subscriber(request, send_to_bge)
+
+            return encode_scene_info(request, self)
+
+        convert_object_message_logic(get_sensors(obj), message_prefixes_scene, get_subject)
+
+        # Convert actuators
+        get_subject = lambda identifier, request: encode_object(encode_scene_info(request, self), obj)
+        convert_object_message_logic(get_actuators(obj), message_prefixes_scene, get_subject)
+
+    def receive_identified_message(self, identifier, subject):
         """Send message to a specific instance that won't be picked up as a broadcast
 
         :param prefix: prefix of subject
         :param subject: subject of message
         """
-        modified_subject = MessageDispatcher.get_bound_prefix(prefix, subject, self._entity.instance_id)
-        self._class_receive_no_broadcast(modified_subject)
+        encoded_scene_info = encode_scene_info(subject, self)
+        encoded_subject = encode_subject(identifier, encoded_scene_info)
+        logic.sendMessage(encoded_subject)
 
-    @staticmethod
-    def convert_message_logic(obj, instance_id):
-        """Convert message sensors & actuators to use unique subjects
+    def _load_configuration_files(self):
+        bge_scene = self.bge_scene
+        open_json = self.resource_manager.open_json
 
-        :param identifier: unique identifier
-        :param obj: game object
-        """
-        sensors = [s for s in obj.sensors if isinstance(s, types.KX_NetworkMessageSensor)]
-        actuators = [c for c in obj.actuators if isinstance(c, types.KX_NetworkMessageActuator)]
+        sorted_rpc_argument_info = self.entity_builder.sorted_rpc_argument_info
+        entity_configuration_info = self.entity_builder.entity_configuration_info
+        entity_classes = self.entity_classes
 
-        for message_handler in sensors + actuators:
-            message_subject = message_handler.subject
+        for obj in list(bge_scene.objects) + list(bge_scene.objectsInactive):
+            name = obj.name
 
-            for prefix in message_prefixes_unique.values():
-                if message_subject.startswith(prefix):
-                    break
-
-            else:
-                continue
-
-            name = message_subject[len(prefix):]
-            message_handler.subject = MessageDispatcher.get_bound_prefix(prefix, name, instance_id)
-
-    @staticmethod
-    def get_state_mask(states):
-        mask = 0
-        for i, value in enumerate(states):
-            mask |= value << i
-
-        return mask
-
-    def set_network_state(self):
-        """Unset any states from other netmodes, then set correct states
-        """
-        states = self._configuration['states']
-        simulated_states = self._configuration['simulated_states']
-
-        netmode = WorldInfo.netmode
-        state = self._obj.state
-        get_mask = self.get_state_mask
-
-        for mask_netmode, netmode_states in states.items():
-            state &= ~get_mask(netmode_states)
-
-        simulated_proxy = Roles.simulated_proxy
-
-        try:
-            roles = self._entity.roles
-
-        except AttributeError:
-            pass
-
-        # Set active states if simulated
-        else:
-            local_role = roles.local
-            active_states = states[netmode]
-            for i, (state_bit, simulated_bit) in enumerate(zip(active_states, simulated_states)):
-                # Permission checks
-                if local_role > simulated_proxy or (simulated_bit and local_role == simulated_proxy):
-                    state |= state_bit << i
-
-        if not state:
-            all_states = (1 << i for i in range(30))
-            used_states = {c.state for c in self._obj.controllers}
+            definition_path = "{}/actor.definition".format(name)
 
             try:
-                state = next(c for c in all_states if not c in used_states)
-                state_index = int(log(state, 2)) + 1
-                print("{}: Using default state of {}".format(self._obj.name, state_index))
+                actor_definition = open_json(definition_path)
 
-            except ValueError:
-                print("{}: Required a default empty state, none available".format(self._obj.name))
+            except FileNotFoundError:
+                continue
 
-        self._obj.state = state
+            configuration = self._parse_configuration(actor_definition)
+            entity_configuration_info[name] = configuration
+            sorted_rpc_argument_info[name] = {rpc_name: sorted(data['arguments']) for rpc_name, data in
+                                              configuration['rpc_calls'].items()}
 
-    def on_notify(self, event_name):
-        self.receive_prefixed_message(message_prefixes_unique['NOTIFICATION'], event_name)
+            entity_classes[name] = ReplicableFactory.from_configuration(name, configuration)
 
-    def dispatch_rpc(self, event_name, data):
-        arguments = self._rpc_args[event_name]
+    @staticmethod
+    def _parse_configuration(actor_definition):
+        definition = actor_definition.copy()
 
-        for name_, value in zip(arguments, data):
-            self._obj[name_] = value
+        definition["states"] = {convert_bpy_enum(x, Netmodes): y for x, y in definition["states"].items()}
 
-        self.receive_prefixed_message(message_prefixes_unique['RPC_INVOKE'], event_name)
+        for function_name, data in definition['rpc_calls'].items():
+            data['arguments'] = {k: eval_bpy_type(v) for k, v in data['arguments'].items()}
+            data['target'] = convert_bpy_enum(data['target'], Netmodes)
+
+        definition['remote_role'] = convert_bpy_enum(definition['remote_role'], Roles)
+
+        return definition
 
 
-message_dispatcher = MessageDispatcher()
+class World(_World):
+
+    scene_class = Scene
 
 
-class Scene:
-
-    def __init__(self, scene):
-        self._scene = scene
-        self._replicable_context = Replicable.get_context(scene.name)
-        self._physics_manager = BGEPhysicsSystem(no_op_func, no_op_func)
-
-    def update(self, delta_time):
-        with self._replicable_context:
-            self._physics_manager.update(delta_time)
-
-class GameLoop(FixedTimeStepManager, SignalListener):
+class GameLoop(FixedTimeStepManager):
 
     def __init__(self):
         super().__init__()
@@ -767,58 +408,233 @@ class GameLoop(FixedTimeStepManager, SignalListener):
         self.on_step = self.step_default
 
         print("Waiting for netmode assignment message")
-        self.register_signals()
 
-    def enable_network(self, netmode):
+        self.world = None
+
+        self._listeners = {}
+        self._listeners['SET_NETMODE'] = self._on_set_netmode
+
+        self._messages = []
+        self._converted_scenes = set()
+
+        self._pending_replication_managers = deque()
+
+    def set_netmode(self, netmode):
         # Load configuration
         print("Loading network information from {}".format(DATA_PATH))
         file_path = logic.expandPath("//{}".format(DATA_PATH))
+        # self.configuration_file_names = {path.splitext(f)[0] for f in listdir(file_path)}
         main_definition_path = path.join(file_path, "main.definition")
 
         # Load network information
         with open(main_definition_path, "r") as file:
-            data = load(file)
+            world_settings = load(file)
 
-        self.configuration_file_names = {path.splitext(f)[0] for f in listdir(file_path)}
-        self.network_update_interval = 1 / data['tick_rate']
-        self.metric_interval = data['metric_interval']
-        self.network_scene = next(s for s in logic.getSceneList() if s.name == data['scene'])
-        BGEComponentLoader.scene = self.network_scene
+        self.network_update_interval = 1 / world_settings['tick_rate']
+        self.metric_interval = world_settings['metric_interval']
 
-        WorldInfo.netmode = netmode
-        print("Running as a {}".format(Netmodes[WorldInfo.netmode]))
+        self.world = World(netmode, logic.getLogicTicRate(), file_path)
+        logic.world = self.world
 
-        # If is server
-        if WorldInfo.netmode == Netmodes.server:
-            self.initialisation_manager = PawnInitialisationManager()
-            self.connection_manager = ControllerManager(self.initialisation_manager)
-
-            WorldInfo.tick_rate = logic.getLogicTicRate()
-            port = data['port']
+        if netmode == Netmodes.server:
+            port = world_settings['port']
+            self.world.rules = Rules()
 
         else:
             port = 0
 
-        # Initialise systems
-        self.network = Network("", port)
-        self.physics_manager = BGEPhysicsSystem(no_op_func, no_op_func)
-        self.input_manager = BGEInputManager()
-        self.signal_forwarder = SignalForwarder(signal_to_message)
-        self.state_manager = StateManager()
+        self.network_manager = NetworkManager(self.world, "", port)
 
         # Time since last sent
         self.time_since_sent = 0.0
 
-        # Load object definitions
-        print("Loading definitions from scene objects")
-        for scene in logic.getSceneList():
-            load_object_definitions(scene)
-
         # Set network as active update function
         self.on_step = self.step_network
-        self.cleanup = lambda: self.network.stop()
+        self.cleanup = lambda: self.network_manager.stop()
+
+        self._listeners['METHOD_INVOKE'] = self._on_invoke_method
+        self._listeners['RPC_INVOKE'] = self._on_invoke_rpc
+        self._listeners['PAWN_REASSOCIATE'] = self._on_controller_reassign
+        self._listeners['SELF_MESSAGE'] = self._on_self_message
+
+        self._listeners['SCENE_MESSAGE'] = self._on_scene_message
+        self._listeners['PAWN_ASSOCIATE'] = self._on_controller_assign
+
+        self._listeners['CONNECT_TO'] = self._on_connect_to
+
+        # Set network state
+        self._update_network_state()
+
+        logic.sendMessage(encode_subject("NETWORK_INIT"))
 
         print("Network started")
+
+    def add_listener(self, name, func):
+        self._listeners[name].append(func)
+
+    def push_network_message(self, message):
+        self._messages.append(message)
+        print("push", message)
+
+    def send_global_message(self, identifier, subject=""):
+        encoded_subject = encode_subject(identifier, subject)
+        logic.sendMessage(encoded_subject)
+
+    def create_new_player(self, replication_manager):
+        self._pending_replication_managers.append(replication_manager)
+        self.send_global_message("REQUEST_PAWN")
+
+    def _process_messages(self):
+        # TODO pre-extract prefixes in SCENE/replicable setup
+        messages = self._messages[:]
+        self._messages.clear()
+
+        listeners = self._listeners
+        world = self.world
+
+        # Lower priority
+        non_global_messages = []
+
+        for encoded_subject in messages:
+            try:
+                identifier, subject = decode_subject(encoded_subject)
+
+            except ValueError:
+                continue
+
+            listener = listeners[identifier]
+
+            if identifier in message_prefixes_global:
+                listener(subject)
+
+            elif identifier in message_prefixes_scene:
+                encoded_scene_info, obj = decode_object(subject)
+                request, scene = decode_scene_info(world, encoded_scene_info)
+                non_global_messages.append(partial(listener, scene, obj, request))
+
+            # Replicable message
+            else:
+                try:
+                    request, replicable = decode_replicable_info(world, subject)
+                except ValueError:
+                    continue
+
+                non_global_messages.append(partial(listener, replicable, request))
+
+        for listener in non_global_messages:
+            listener()
+
+    def _convert_game_global_message_logic(self):
+        """Convert all global messages in scene"""
+        for scene in logic.getSceneList():
+            if not id(scene) in self._converted_scenes:
+                self._convert_scene_global_message_logic(scene)
+                self._converted_scenes.add(id(scene))
+
+    def _convert_scene_global_message_logic(self, scene):
+        """Convert logic bricks which use GLOBAL message API"""
+        objects = list(scene.objects)
+        objects.extend(scene.objectsInactive)
+
+        for obj in objects:
+            # Convert sensors
+            convert_object_message_logic(get_sensors(obj), message_prefixes_global)
+
+            # Convert actuators
+            convert_object_message_logic(get_actuators(obj), message_prefixes_global)
+
+    def _on_connect_to(self, target):
+        ip_address, port = target.split("::")
+        if not ip_address:
+            ip_address = "localhost"
+
+        port = int(port)
+
+        self.network_manager.connect_to(ip_address, port)
+        print("CONNECT")
+
+    def _on_set_netmode(self, netmode_name):
+        try:
+            netmode = getattr(Netmodes, netmode_name)
+
+        except AttributeError:
+            print("Couldn't set netmode as {}".format(netmode_name))
+            return
+
+        if self.world is not None:
+            print("Netmode is already set!")
+            return
+
+        self.set_netmode(netmode)
+
+    def _on_scene_message(self, scene, from_obj, message_name):
+        scene.messenger.send(message_name)
+
+    def _on_controller_assign(self, scene, from_obj, replicable_class_name):
+        """Handle connection controller initial pawn assignment"""
+        scene.controller_manager.on_assigned_pawn(from_obj, replicable_class_name)
+
+    def _on_self_message(self, replicable, method_name):
+        replicable.messenger.send(method_name)
+
+    def _on_invoke_method(self, replicable, method_name):
+        """Handle RPC messages"""
+        getattr(replicable, method_name)()
+
+    def _on_invoke_rpc(self, replicable, rpc_name):
+        """Handle RPC messages"""
+        replicable.invoke_rpc(rpc_name)
+
+    def _on_controller_reassign(self, replicable, replicable_class_name):
+        """Handle connection controller subsequent pawn assignment"""
+        replicable.scene.controller_manager.on_reassigned_pawn(replicable, replicable_class_name)
+
+    def _on_new_pawn(self, replicable, message_name):
+        replicable.scene.controller_manager.send_to_new_pawn(replicable, message_name)
+
+    def _get_pending_connection_info(self):
+        return self._pending_replication_managers.popleft()
+
+    def _update_network_state(self):
+        # Initialise network objects if they're added
+        for bge_scene in logic.getSceneList():
+            scene_name = bge_scene.name
+
+            # Initialise scene if it doesn't exist
+            try:
+                scene = self.world.scenes[scene_name]
+
+            except KeyError:
+                scene = self.world.add_scene(scene_name)
+                scene.get_pending_connection_info = self._get_pending_connection_info
+
+            to_create_dynamic = []
+            to_create_static = []
+
+            for obj in bge_scene.objects:
+                if "_entity" in obj:
+                    continue
+
+                obj_name = obj.name
+                if obj_name in scene.entity_classes:
+                    if obj_name in bge_scene.objectsInactive:
+                        to_create_dynamic.append(obj_name)
+
+                    else:
+                        to_create_static.append(obj_name)
+
+            # Create static replicables
+            to_create_static.sort()
+
+            for i, new_obj_name in enumerate(to_create_static):
+                replicable_cls = scene.entity_classes[new_obj_name]
+                scene.add_replicable(replicable_cls, unique_id=i)
+
+            for new_obj_name in to_create_dynamic:
+                replicable_cls = scene.entity_classes[new_obj_name]
+                scene.add_replicable(replicable_cls)
+
+            scene.cull_invalid_objects()
 
     @property
     def time_step(self):
@@ -830,96 +646,167 @@ class GameLoop(FixedTimeStepManager, SignalListener):
 
         # Check if exit key is pressed
         if logic.keyboard.events[exit_key] == logic.KX_INPUT_JUST_ACTIVATED:
-            quit_game = lambda: setattr(self, "pending_exit", True)
+
             # Exit immediately!
-            if WorldInfo.netmode == Netmodes.server:
-                raise OnExitUpdate()
+            if not self.world or (self.world.netmode == Netmodes.server):
+                raise ForcedLoopExit("Exit key pressed")
 
             else:
-                DisconnectSignal.invoke(quit_game)
+                self.world.messenger.send("pending_disconnect") # TODO trigger disconnect request
+
+                def quit_game():
+                    raise ForcedLoopExit("Disconnect timed out")
+
                 # Else abort
-                timeout = Timer(0.6)
-                timeout.on_target = quit_game
-
-        # If we're pending exit
-        if self.pending_exit:
-            raise OnExitUpdate()
-
-    @NetmodeAssignedSignal.on_global
-    def on_netmode_assigned(self, netmode):
-        """Callback when netmode has been assigned
-
-        :param netmode: netmode to assign
-        """
-        self.enable_network(netmode)
+                timeout = self.world.timer_manager.add_timer(0.6)
+                timeout.on_elapsed = quit_game
 
     def step_default(self, delta_time):
+        self._convert_game_global_message_logic()
+
         logic.NextFrame()
+
+        # Process received messages from logic.NextFrame()
+        self._process_messages()
 
         # Check if exit is required
         self.check_exit()
 
     def step_network(self, delta_time):
-        scene = self.network_scene
+        self.time_since_sent += delta_time
 
-        # Initialise network objects if they're added
-        configuration_file_names = self.configuration_file_names
-        for obj in scene.objects:
-            if obj.name not in configuration_file_names or obj in replicables_to_game_objects.values():
-                continue
+        self.network_manager.receive()
 
-            instantiate_actor_from_obj(obj)
-
-        self.network.receive()
-
-        # Set network states
-        self.state_manager.set_states()
+        self._convert_game_global_message_logic()
 
         # Update BGE gameloop
         logic.NextFrame()
 
-        # Catch any deleted BGE objects from BGE
-        for actor in Replicable.subclass_of_type(SCAActor).copy():
-            if not actor.bge_interface.is_alive:
-                actor.deregister()
+        self._update_network_state()
 
-        # Update Timers
-        TimerUpdateSignal.invoke(delta_time)
+        # Process received messages from logic.NextFrame()
+        self._process_messages()
 
-        # Update Player Controller inputs for client
-        self.input_manager.update()
-
-        if WorldInfo.netmode != Netmodes.server:
-            PlayerInputSignal.invoke(delta_time, self.input_manager.state)
-
-        # Update main logic (Replicable update)
-        PropertySynchroniseSignal.invoke(delta_time)
-
-        LogicUpdateSignal.invoke(delta_time)
-
-        self.physics_manager.update(delta_time)
+        self.world.tick()
 
         # Transmit new state to remote peer
-        self.time_since_sent += delta_time
         is_full_update = (self.time_since_sent >= self.network_update_interval)
 
-        self.network.send(is_full_update)
+        self.network_manager.send(is_full_update)
 
         if is_full_update:
             self.time_since_sent = 0.0
 
-        network_metrics = self.network.metrics
+        # Update network metrics
+        network_metrics = self.network_manager.metrics
         if network_metrics.sample_age >= self.metric_interval:
             network_metrics.reset_sample_window()
-
-        # Handle this outside of usual update
-        if WorldInfo.netmode == Netmodes.server:
-            WorldInfo.update_clock(delta_time)
 
         # Check if exit is required
         self.check_exit()
 
 
+# Helper functions
+def get_sensors(obj):
+    return [s for s in obj.sensors if isinstance(s, types.KX_NetworkMessageSensor)]
+
+
+def get_actuators(obj):
+    return [a for a in obj.actuators if isinstance(a, types.KX_NetworkMessageActuator)]
+
+
 def main():
-    mainloop = GameLoop()
-    mainloop.delegate()
+    game_loop = GameLoop()
+    logic.game = game_loop
+    game_loop.run()
+
+
+# Instant-message API
+def activate_actuator(cont, actuator):
+    if not isinstance(actuator, types.KX_NetworkMessageActuator):
+        cont.activate(actuator)
+        return
+
+    # TODO what about safe messages??
+    logic.game.push_network_message(actuator.subject)
+
+
+def deactivate_actuator(cont, actuator):
+    if not isinstance(actuator, types.KX_NetworkMessageActuator):
+        cont.deactivate(actuator)
+        return
+
+
+def _logical_controller(condition, cont):
+    if condition(cont.sensors):
+        for actuator in cont.actuators:
+            activate_actuator(cont, actuator)
+    else:
+        for actuator in cont.actuators:
+            deactivate_actuator(cont, actuator)
+
+
+def _AND(sensors):
+    for sens in sensors:
+        if not sens.positive:
+            return False
+
+    return True
+
+
+def _NAND(sensors):
+    return not _AND(sensors)
+
+
+def _OR(sensors):
+    for sens in sensors:
+        if sens.positive:
+            return True
+
+    return False
+
+
+def _NOR(sensors):
+    return not _OR(sensors)
+
+
+def _XOR(sensors):
+    number_positive = 0
+    for sens in sensors:
+        if sens.positive:
+            number_positive += 1
+
+    return number_positive == 1
+
+
+def _XNOR(sensors):
+    number_false = 0
+    for sens in sensors:
+        if not sens.positive:
+            number_false += 1
+
+    return number_false == 1
+
+
+def AND(cont):
+    _logical_controller(_AND, cont)
+
+
+def NAND(cont):
+    _logical_controller(_NAND, cont)
+
+
+def OR(cont):
+    _logical_controller(_OR, cont)
+
+
+def NOR(cont):
+    _logical_controller(_NOR, cont)
+
+
+def XNOR(cont):
+    _logical_controller(_XNOR, cont)
+
+
+def XOR(cont):
+    _logical_controller(_XOR, cont)
