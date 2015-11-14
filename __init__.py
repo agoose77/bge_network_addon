@@ -73,12 +73,6 @@ def on_scene_use_network_updated_protected(scene, context):
         active_network_scene = None
 
     if not scene.use_network:
-        # Remove dispatcher object
-        dispatcher = get_dispatcher(scene)
-        if dispatcher is not None:
-            info("Unlinking dispatcher: {}".format(dispatcher))
-            scene.objects.unlink(dispatcher)
-
         return
 
     active_network_scene = scene
@@ -628,47 +622,6 @@ def update_use_network(context):
                 scene.use_network = False
 
 
-def get_dispatcher(scene):
-    """Check if dispatcher exists in scene"""
-    try:
-        return scene.objects[DISPATCHER_NAME]
-
-    except KeyError:
-        # It might have been renamed
-        for obj in scene.objects:
-            if DISPATCHER_MARKER in obj:
-                return obj
-
-    return None
-
-
-def load_dispatcher(scene):
-    """Load dispatcher object from assets blend"""
-    addon_folder = get_addon_folder()
-    data_path = path.join(addon_folder, ASSETS_FILENAME)
-
-    # Load dispatcher
-    with bpy.data.libraries.load(data_path) as (data_from, data_to):
-        data_to.objects.append(DISPATCHER_NAME)
-
-    dispatcher = data_to.objects[0]
-    dispatcher[DISPATCHER_MARKER] = True
-
-    scene.objects.link(dispatcher)
-
-
-def check_dispatcher_exists(context):
-    network_scene = active_network_scene
-    if network_scene is None:
-        return
-
-    if get_dispatcher(network_scene) is not None:
-        return
-
-    info("Reloaded dispatcher from assets.blend")
-    load_dispatcher(network_scene)
-
-
 def set_network_global_var(context):
     """Set global active_network_scene variable in registered"""
     global active_network_scene
@@ -784,7 +737,6 @@ on_update_if_active_handlers.append(update_attributes)
 on_update_if_active_handlers.append(update_network_logic)
 on_update_if_active_handlers.append(update_text_files)
 on_update_if_active_handlers.append(update_templates)
-on_update_if_active_handlers.append(check_dispatcher_exists)
 
 on_update_global_handlers.append(update_use_network)
 on_update_global_handlers.append(poll_version_checker)

@@ -579,7 +579,8 @@ class GameLoop(FixedTimeStepManager):
 
     def _on_invoke_method(self, replicable, method_name):
         """Handle RPC messages"""
-        getattr(replicable, method_name)()
+        func = getattr(replicable, method_name)
+        func()
 
     def _on_invoke_rpc(self, replicable, rpc_name):
         """Handle RPC messages"""
