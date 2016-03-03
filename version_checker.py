@@ -32,6 +32,8 @@ class RemoteVersionChecker(Thread):
         self._requests = SafeQueue()
         self._results = SafeQueue()
 
+        self.daemon = True
+
     @property
     def results(self):
         results = self._results

@@ -83,6 +83,7 @@ class LOGIC_OT_remove_template_class(types.Operator):
         template.defaults_active = 0
 
         unload_template(template.import_path)
+        print("UNLOADed")
 
         template.import_path = ""
 

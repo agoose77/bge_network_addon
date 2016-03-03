@@ -9,15 +9,15 @@ message_prefixes_replicable = dict(
 
     RPC_INVOKE="@",
     NOTIFICATION="!",
-    SELF_MESSAGE="->",
+    SELF_MESSAGE="SELF->",
     METHOD_INVOKE="#",
-    NEW_PAWN="NEW_PAWN->"
+    TO_NEW_PAWN="NEW_PAWN->"
     )
 
 
 message_prefixes_global = dict(
     SET_NETMODE="NETMODE=",
-    CONNECT_TO="CONNECT->",
+    CONNECT_TO="CONNECT::",
     REQUEST_PAWN="PAWN?"
     )
 

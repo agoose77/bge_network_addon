@@ -8,10 +8,9 @@ ROLES_ENUMS = get_bpy_enum(Roles)
 
 CONFIGURATION_FILE = "configuration.json"
 
-LISTENER_PATH = "interface.listener"
 DATA_PATH = "network_data"
 RULES_FILENAME = "rules.py"
-MAINLOOP_FILENAME = "mainloop.py"
+MAINLOOP_FILENAME = "_mainloop.py"
 INTERFACE_FILENAME = "multiplayer.py"
 ACTORS_FILENAME = "actors.py"
 CONTROLLERS_FILENAME = "controllers.py"

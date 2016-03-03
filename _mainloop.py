@@ -16,7 +16,7 @@ from collections import defaultdict, deque
 from functools import partial
 from json import load
 from os import path
-from weakref import ref
+from weakref import ref, WeakKeyDictionary
 
 from bge import logic, types
 from actors import *
@@ -161,7 +161,9 @@ def {name}(self{args}) -> {returns}:
 
         class_lines = ["mesh = MeshComponent('{}')".format(raw_name)]
 
-        attributes = configuration['attributes']
+        _attributes = configuration['attributes']
+        attributes = OrderedDict(((k, _attributes[k]) for k in sorted(_attributes)))
+
         attribute_definitions = [cls.create_attribute_string(attr_name, data) for attr_name, data
                                  in attributes.items()]
         # Add remote role
@@ -171,7 +173,10 @@ def {name}(self{args}) -> {returns}:
 
         class_lines.extend(attribute_definitions)
 
-        rpc_calls = configuration['rpc_calls']
+        # To ensure that same definition order occurs
+        _rpc_calls = configuration['rpc_calls']
+        rpc_calls = OrderedDict(((k, _rpc_calls[k]) for k in sorted(_rpc_calls)))
+
         rpc_definitions = [cls.create_rpc_string(function_name, data) for function_name, data in rpc_calls.items()]
         class_lines.extend([y for c in rpc_definitions for y in c.split("\n")])
 
@@ -207,7 +212,7 @@ def {name}(self{args}) -> {returns}:
 class ControllerManager:
 
     def __init__(self, scene):
-        self._instigator_to_pawn = {}
+        self._instigator_to_pawn = WeakKeyDictionary()
 
         self.scene = scene
 
@@ -249,20 +254,28 @@ class ControllerManager:
         pawn.transform.world_position = bge_obj.worldPosition
         pawn.transform.world_orientation = bge_obj.worldOrientation.to_quaternion()
 
-    def send_to_new_pawn(self, instigator, message):
-        pawn = self._instigator_to_pawn[instigator]
+    def send_to_new_pawn(self, bge_instigator_object, message):
+        """Send message to newly created pawn.
+
+        Uses BGE object source, not replicable, as non-replicables can use scene-messages to create pawn
+        """
+        try:
+            pawn = self._instigator_to_pawn[bge_instigator_object]
+        except KeyError:
+            raise KeyError("Couldn't find pawn to receive message from '{}'.".format(bge_instigator_object) +
+                           "Check that the respawn/new pawn controller has priority")
         pawn.receive_identified_message('SELF_MESSAGE', message)
 
-    def _assign_new_pawn(self, instigator, controller, replicable_cls):
+    def _assign_new_pawn(self, bge_instigator_obj, controller, replicable_cls):
         pawn = self.scene.add_replicable(replicable_cls)
         controller.take_control(pawn)
         pawn.owner = controller
 
         # Remember who created this pawn
-        self._instigator_to_pawn[instigator] = pawn
+        self._instigator_to_pawn[bge_instigator_obj] = pawn
 
         # Send ONLY to this object (avoid positive feedback)
-        self.send_to_new_pawn(instigator, "init")
+        self.send_to_new_pawn(bge_instigator_obj, "init")
         return pawn
 
 
@@ -433,6 +446,7 @@ class GameLoop(FixedTimeStepManager):
         self.network_update_interval = 1 / world_settings['tick_rate']
         self.metric_interval = world_settings['metric_interval']
 
+        print("Set netmode", Netmodes[netmode])
         self.world = World(netmode, logic.getLogicTicRate(), file_path)
         logic.world = self.world
 
@@ -459,8 +473,10 @@ class GameLoop(FixedTimeStepManager):
 
         self._listeners['SCENE_MESSAGE'] = self._on_scene_message
         self._listeners['PAWN_ASSOCIATE'] = self._on_controller_assign
+        self._listeners['TO_NEW_PAWN'] = self._on_new_pawn_message
 
-        self._listeners['CONNECT_TO'] = self._on_connect_to
+        if netmode == Netmodes.client:
+            self._listeners['CONNECT_TO'] = self._on_connect_to
 
         # Set network state
         self._update_network_state()
@@ -474,7 +490,6 @@ class GameLoop(FixedTimeStepManager):
 
     def push_network_message(self, message):
         self._messages.append(message)
-        print("push", message)
 
     def send_global_message(self, identifier, subject=""):
         encoded_subject = encode_subject(identifier, subject)
@@ -482,7 +497,7 @@ class GameLoop(FixedTimeStepManager):
 
     def create_new_player(self, replication_manager):
         self._pending_replication_managers.append(replication_manager)
-        self.send_global_message("REQUEST_PAWN")
+        self.send_global_message('REQUEST_PAWN')
 
     def _process_messages(self):
         # TODO pre-extract prefixes in SCENE/replicable setup
@@ -544,14 +559,14 @@ class GameLoop(FixedTimeStepManager):
             convert_object_message_logic(get_actuators(obj), message_prefixes_global)
 
     def _on_connect_to(self, target):
-        ip_address, port = target.split("::")
+        ip_address, port = target.split("@")
+
         if not ip_address:
             ip_address = "localhost"
 
         port = int(port)
 
         self.network_manager.connect_to(ip_address, port)
-        print("CONNECT")
 
     def _on_set_netmode(self, netmode_name):
         try:
@@ -590,8 +605,8 @@ class GameLoop(FixedTimeStepManager):
         """Handle connection controller subsequent pawn assignment"""
         replicable.scene.controller_manager.on_reassigned_pawn(replicable, replicable_class_name)
 
-    def _on_new_pawn(self, replicable, message_name):
-        replicable.scene.controller_manager.send_to_new_pawn(replicable, message_name)
+    def _on_new_pawn_message(self, replicable, message_name):
+        replicable.scene.controller_manager.send_to_new_pawn(replicable.game_object, message_name)
 
     def _get_pending_connection_info(self):
         return self._pending_replication_managers.popleft()
@@ -630,6 +645,7 @@ class GameLoop(FixedTimeStepManager):
             for i, new_obj_name in enumerate(to_create_static):
                 replicable_cls = scene.entity_classes[new_obj_name]
                 scene.add_replicable(replicable_cls, unique_id=i)
+                print("CREATE", new_obj_name, i)
 
             for new_obj_name in to_create_dynamic:
                 replicable_cls = scene.entity_classes[new_obj_name]
@@ -687,6 +703,9 @@ class GameLoop(FixedTimeStepManager):
 
         # Process received messages from logic.NextFrame()
         self._process_messages()
+
+        for scene in self.world.scenes.values():
+            scene.messenger.send("sync_properties")
 
         self.world.tick()
 
@@ -811,3 +830,27 @@ def XNOR(cont):
 
 def XOR(cont):
     _logical_controller(_XOR, cont)
+
+
+def any_positive(cont):
+    for sens in cont.sensors:
+        if sens.positive:
+            return True
+    return False
+
+
+def EXPRESSION(cont, expression):
+    if not any_positive(cont):
+        return
+
+    own = cont.owner
+
+    properties = {n: own[n] for n in own.getPropertyNames()}
+
+    if eval(expression, properties):
+        for actuator in cont.actuators:
+            activate_actuator(cont, actuator)
+    else:
+        for actuator in cont.actuators:
+            deactivate_actuator(cont, actuator)
+

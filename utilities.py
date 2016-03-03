@@ -20,34 +20,71 @@ def if_not_busy(identifier):
         busy_operations.remove(identifier)
 
 
+class TemplateClassReference:
+
+    def __init__(self, path):
+        self._references = 0
+
+        self._path = path
+        self._cls = None
+        self._modules = None
+
+    @property
+    def references(self):
+        return self._references
+
+    def _free_modules(self):
+        for module_name in self._modules:
+            del sys.modules[module_name]
+
+        self._cls = None
+        self._modules = None
+
+    def _load_modules(self):
+        cls, loaded_modules = load_class_from_module(self._path)
+
+        self._cls = cls
+        self._modules = loaded_modules
+
+    def get_reference(self):
+        if not self._references:
+            self._load_modules()
+
+        self._references += 1
+        return self._cls
+
+    def release_reference(self):
+        self._references -= 1
+
+        if not self._references:
+            self._free_modules()
+
+
 def load_template(path):
-    cls, loaded_modules = load_class_from_module(path)
-
     # Add counter here
-    info = template_modules.setdefault(path, [loaded_modules, 0])
+    try:
+        info = template_modules[path]
 
-    if loaded_modules:
-        info[1] += 1
+    except KeyError:
+        info = template_modules[path] = TemplateClassReference(path)
 
-    return cls
+    return info.get_reference()
 
 
 def unload_template(path):
-    if path in template_modules:
+    try:
         info = template_modules[path]
-        info[1] -= 1
 
-        if not info[1]:
-            for mod_name in info[0]:
-                sys.modules.pop(mod_name)
+    except KeyError:
+        print("Couldn't find template info to unload")
+        return
 
-            template_modules.pop(path)
+    info.release_reference()
 
 
 def load_class_from_module(path):
     *module_parts, class_name = path.split(".")
     module_path = '.'.join(module_parts)
-
     pre_modules = sys.modules.copy()
     module = __import__(module_path, fromlist=[class_name])
     loaded_modules = set(sys.modules) - pre_modules.keys()
@@ -112,8 +149,10 @@ def determine_mro(*bases):
 
 def get_bpy_enum(enum):
     enum_name = enum.__name__.rstrip("s").lower()
-    return [(x.upper(), x.replace('_', ' ').title(), "{} {}".format(x.capitalize(), enum_name), 'BLANK1', v)
+    e = [(x.upper(), x.replace('_', ' ').title(), "{} {}".format(x.capitalize(), enum_name), 'BLANK1', v)
             for x, v in enum]
+    print(e)
+    return e
 
 
 def type_to_enum_type(type_):

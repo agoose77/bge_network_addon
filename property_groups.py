@@ -4,10 +4,6 @@ from .configuration import NETWORK_ENUMS, TYPE_ENUMS
 from .utilities import determine_mro
 
 
-def is_identifier(value):
-    assert value.isidentifier()
-
-
 class AttributeGroup(types.PropertyGroup):
     """PropertyGroup for Actor attributes"""
     name = props.StringProperty(description="Name of game property")

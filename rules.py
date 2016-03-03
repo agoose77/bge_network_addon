@@ -11,14 +11,18 @@ class Rules:
     def pre_initialise(self, connection_info):
         return
     
-    # def post_disconnect(self, conn, replicable):
-    #     replicable.deregister()
+    def on_disconnected(self, replication_manager, root_replicables):
+        for replicable in root_replicables:
+            scene = replicable.scene
+
+            scene.remove_replicable(replicable)
     
     def post_initialise(self, replication_manager):
         # Ask for a pawn to be spawned
         logic.game.create_new_player(replication_manager)
+        print("SPAWN")
             
-    def is_relevant(self, replication_manager, replicable):
+    def is_relevant(self, replicable):
         if isinstance(replicable, PawnController):
             return False
         

@@ -42,7 +42,7 @@ class SCAActor(Pawn):
         if name == "roles":
             self.set_network_states()
 
-        if name in self.property_names:
+        elif name in self.property_names:
             self.set_property(name, getattr(self, name))
 
         self.receive_identified_message('NOTIFICATION', name)
@@ -156,7 +156,6 @@ class SCAActor(Pawn):
     @simulated
     def invoke_rpc(self, rpc_name):
         obj = self.game_object
-
         rpc_args = self.rpc_arguments[rpc_name]
         rpc_data = [obj[arg_name] for arg_name in rpc_args]
 

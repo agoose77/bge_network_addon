@@ -139,7 +139,7 @@ class SystemPanel(bpy.types.Panel):
         layout.operator("network.select_all", icon='GROUP', text="Select Only Network Objects")
 
 
-class ObjectSettingsPanel(bpy.types.Panel):
+class NetworkObjectPanelMixin:
 
     @classmethod
     def poll(cls, context):
@@ -147,7 +147,7 @@ class ObjectSettingsPanel(bpy.types.Panel):
         return obj is not None and obj.use_network
 
 
-class RPCPanel(ObjectSettingsPanel):
+class RPCPanel(NetworkObjectPanelMixin, bpy.types.Panel):
     bl_space_type = "LOGIC_EDITOR"
     bl_region_type = "UI"
     bl_label = "RPC Calls"
@@ -189,7 +189,7 @@ class RPCPanel(ObjectSettingsPanel):
                                "arguments_index", rows=3)
 
 
-class StatesPanel(ObjectSettingsPanel):
+class StatesPanel(NetworkObjectPanelMixin, bpy.types.Panel):
     bl_space_type = "LOGIC_EDITOR"
     bl_region_type = "UI"
     bl_label = "Network State"
@@ -290,7 +290,7 @@ class StatesPanel(ObjectSettingsPanel):
 
 
 # Add support for modifying inherited parameters?
-class AttributesPanel(ObjectSettingsPanel):
+class AttributesPanel(NetworkObjectPanelMixin, bpy.types.Panel):
     bl_space_type = "LOGIC_EDITOR"
     bl_region_type = "UI"
     bl_label = "Replicated Attributes"
@@ -311,7 +311,7 @@ class AttributesPanel(ObjectSettingsPanel):
         layout.template_list('RENDER_RT_AttributeList', "Properties", obj, "attributes", obj, "attribute_index", rows=3)
 
 
-class TemplatesPanel(ObjectSettingsPanel):
+class TemplatesPanel(NetworkObjectPanelMixin, bpy.types.Panel):
     bl_space_type = "LOGIC_EDITOR"
     bl_region_type = "UI"
     bl_label = "Templates"
@@ -443,7 +443,6 @@ def save_state(context):
     main_config['port'] = network_scene.port
     main_config['tick_rate'] = network_scene.tick_rate
     main_config['metric_interval'] = network_scene.metric_interval
-    main_config['scene'] = network_scene.name
 
     with open(path.join(root_data_path, "main.definition"), "w") as file:
         dump(main_config, file)
@@ -580,7 +579,9 @@ def update_templates(context):
     if not template_path:
         return
 
+    #print("TEMP", template_path)
     defaults = template.defaults
+    #print(dict(defaults))
     if defaults:
         return
 
