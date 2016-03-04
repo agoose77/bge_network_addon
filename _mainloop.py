@@ -245,7 +245,7 @@ class ControllerManager:
         replicable_cls = Replicable.subclasses[replicable_class_name]
 
         controller = self.scene.add_replicable(SCAPlayerPawnController)
-        replication_manager = self.scene.get_pending_connection_info()
+        replication_manager = self.scene.get_pending_replication_manager()
 
         replication_manager.set_root_for_scene(self.scene, controller)
 
@@ -270,12 +270,14 @@ class ControllerManager:
         pawn = self.scene.add_replicable(replicable_cls)
         controller.take_control(pawn)
         pawn.owner = controller
-
+        
         # Remember who created this pawn
         self._instigator_to_pawn[bge_instigator_obj] = pawn
 
         # Send ONLY to this object (avoid positive feedback)
         self.send_to_new_pawn(bge_instigator_obj, "init")
+
+        print("Assigned '{}' to '{}' by BGE object '{}'".format(pawn, controller, bge_instigator_obj))
         return pawn
 
 
@@ -308,7 +310,6 @@ class Scene(_Scene):
     def __init__(self, world, name):
         super().__init__(world, name)
 
-        self.entity_builder = EntityBuilder(self.bge_scene)
         self.entity_classes = {}
 
         if world.netmode == Netmodes.server:
@@ -319,7 +320,10 @@ class Scene(_Scene):
         self._load_configuration_files()
         self._convert_scene_message_logic()
 
-        self.get_pending_connection_info = None
+        self.get_pending_replication_manager = None
+
+    def _create_entity_builder(self):
+        return EntityBuilder(self.bge_scene)
 
     def cull_invalid_objects(self):
         to_remove = []
@@ -498,6 +502,7 @@ class GameLoop(FixedTimeStepManager):
     def create_new_player(self, replication_manager):
         self._pending_replication_managers.append(replication_manager)
         self.send_global_message('REQUEST_PAWN')
+        print("APPEND NEW MANAGER")
 
     def _process_messages(self):
         # TODO pre-extract prefixes in SCENE/replicable setup
@@ -608,8 +613,12 @@ class GameLoop(FixedTimeStepManager):
     def _on_new_pawn_message(self, scene, from_obj, message_name):
         scene.controller_manager.send_to_new_pawn(from_obj, message_name)
 
-    def _get_pending_connection_info(self):
-        return self._pending_replication_managers.popleft()
+    def _get_pending_replication_manager(self):
+        try:
+            return self._pending_replication_managers.popleft()
+
+        except IndexError:
+            raise RuntimeError("No replication manager is pending for a pawn")
 
     def _update_network_state(self):
         # Initialise network objects if they're added
@@ -622,7 +631,7 @@ class GameLoop(FixedTimeStepManager):
 
             except KeyError:
                 scene = self.world.add_scene(scene_name)
-                scene.get_pending_connection_info = self._get_pending_connection_info
+                scene.get_pending_replication_manager = self._get_pending_replication_manager
 
             to_create_dynamic = []
             to_create_static = []
@@ -645,7 +654,6 @@ class GameLoop(FixedTimeStepManager):
             for i, new_obj_name in enumerate(to_create_static):
                 replicable_cls = scene.entity_classes[new_obj_name]
                 scene.add_replicable(replicable_cls, unique_id=i)
-                print("CREATE", new_obj_name, i)
 
             for new_obj_name in to_create_dynamic:
                 replicable_cls = scene.entity_classes[new_obj_name]
@@ -745,16 +753,14 @@ def main():
 def activate_actuator(cont, actuator):
     if not isinstance(actuator, types.KX_NetworkMessageActuator):
         cont.activate(actuator)
-        return
-
-    # TODO what about safe messages??
-    logic.game.push_network_message(actuator.subject)
+    else:
+        # TODO what about safe messages??
+        logic.game.push_network_message(actuator.subject)
 
 
 def deactivate_actuator(cont, actuator):
     if not isinstance(actuator, types.KX_NetworkMessageActuator):
         cont.deactivate(actuator)
-        return
 
 
 def _logical_controller(condition, cont):
@@ -846,8 +852,12 @@ def EXPRESSION(cont, expression):
     own = cont.owner
 
     properties = {n: own[n] for n in own.getPropertyNames()}
+    sensors = {s.name: s.positive for s in cont.sensors}
 
-    if eval(expression, properties):
+    namespace = properties.copy()
+    namespace.update(sensors)
+
+    if eval(expression, namespace):
         for actuator in cont.actuators:
             activate_actuator(cont, actuator)
     else:
