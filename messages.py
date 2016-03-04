@@ -11,7 +11,6 @@ message_prefixes_replicable = dict(
     NOTIFICATION="!",
     SELF_MESSAGE="SELF->",
     METHOD_INVOKE="#",
-    TO_NEW_PAWN="NEW_PAWN->"
     )
 
 
@@ -24,6 +23,7 @@ message_prefixes_global = dict(
 message_prefixes_scene = dict(
     SCENE_MESSAGE="SCENE->",
     PAWN_ASSOCIATE="NEW_PAWN=",
+    TO_NEW_PAWN="NEW_PAWN->"
 )
 
 

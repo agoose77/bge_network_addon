@@ -605,8 +605,8 @@ class GameLoop(FixedTimeStepManager):
         """Handle connection controller subsequent pawn assignment"""
         replicable.scene.controller_manager.on_reassigned_pawn(replicable, replicable_class_name)
 
-    def _on_new_pawn_message(self, replicable, message_name):
-        replicable.scene.controller_manager.send_to_new_pawn(replicable.game_object, message_name)
+    def _on_new_pawn_message(self, scene, from_obj, message_name):
+        scene.controller_manager.send_to_new_pawn(from_obj, message_name)
 
     def _get_pending_connection_info(self):
         return self._pending_replication_managers.popleft()

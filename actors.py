@@ -22,7 +22,7 @@ class SCAActor(Pawn):
     rpc_arguments = None
     game_object = None
 
-    def __init__(self, scene, unique_id, is_static=False):
+    def __init__(self, scene, unique_id, id_is_explicit=False):
         """Initialise new network object
 
         :param obj: GameObject instance
